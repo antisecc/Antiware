@@ -11,7 +11,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-
+#include <math.h>
 #include "../include/antiransom.h"
 #include "../include/events.h"
 #include "../common/logger.h"
@@ -49,14 +49,14 @@ static char *read_string_from_process(pid_t pid, unsigned long addr);
 int syscall_monitor_init(void) {
     process_contexts = malloc(10 * sizeof(SyscallContext));
     if (!process_contexts) {
-        LOG_ERROR("Failed to allocate memory for process contexts");
+        LOG_ERROR("Failed to allocate memory for process contexts%s", "");
         return -1;
     }
     
     context_capacity = 10;
     context_count = 0;
     
-    LOG_INFO("Syscall monitor initialized");
+    LOG_INFO("Syscall monitor initialized%s", "");
     return 0;
 }
 
@@ -69,17 +69,21 @@ void syscall_monitor_cleanup(void) {
     context_capacity = 0;
     context_count = 0;
     
-    LOG_INFO("Syscall monitor cleaned up");
+    LOG_INFO("Syscall monitor cleaned up%s", "");
 }
 
 // Start monitoring a specific process
 int syscall_monitor_attach(pid_t pid, EventHandler event_handler, void *user_data) {
+    // Mark unused parameters
+    (void)event_handler;
+    (void)user_data;
+    
     // Check if we need to grow the contexts array
     if (context_count >= context_capacity) {
         size_t new_capacity = context_capacity * 2;
         SyscallContext *new_contexts = realloc(process_contexts, new_capacity * sizeof(SyscallContext));
         if (!new_contexts) {
-            LOG_ERROR("Failed to resize process contexts array");
+            LOG_ERROR("Failed to resize process contexts array%s", "");
             return -1;
         }
         
@@ -339,6 +343,10 @@ static void handle_syscall_exit(SyscallContext *ctx, struct user_regs_struct *re
 // Handle execve syscall - process creation
 static void handle_execve(SyscallContext *ctx, struct user_regs_struct *regs, int entry, 
                          EventHandler handler, void *user_data) {
+    // Mark unused parameters
+    (void)regs;
+    (void)entry;
+    
     if (!handler) return;
     
     Event event;
@@ -376,6 +384,10 @@ static void handle_execve(SyscallContext *ctx, struct user_regs_struct *regs, in
 // Handle open/openat syscall - file access
 static void handle_open(SyscallContext *ctx, struct user_regs_struct *regs, int entry, 
                        EventHandler handler, void *user_data) {
+    // Mark unused parameters
+    (void)regs;
+    (void)entry;
+    
     if (!handler) return;
     
     Event event;
@@ -412,16 +424,26 @@ static void handle_open(SyscallContext *ctx, struct user_regs_struct *regs, int 
 // Handle read syscall - reading file content
 static void handle_read(SyscallContext *ctx, struct user_regs_struct *regs, int entry, 
                        EventHandler handler, void *user_data) {
+    // Mark unused parameters
+    (void)regs;
+    (void)entry;
+    (void)handler;
+    (void)user_data;
+    
     // For read, we just log the activity without generating events
     // because it's very common and would generate too much noise
     // We'll track specific read-write patterns in the detection logic
     
-    LOG_TRACE("Process %d read from fd: %lu, size: %lu", ctx->pid, ctx->args[0], ctx->args[2]);
+    LOG_DEBUG("Process %d read from fd: %lu, size: %lu", ctx->pid, ctx->args[0], ctx->args[2]);
 }
 
 // Handle write syscall - writing file content
 static void handle_write(SyscallContext *ctx, struct user_regs_struct *regs, int entry, 
                         EventHandler handler, void *user_data) {
+    // Mark unused parameters
+    (void)regs;
+    (void)entry;
+    
     if (!handler) return;
     
     // Only generate events for significant writes to avoid noise
@@ -449,6 +471,10 @@ static void handle_write(SyscallContext *ctx, struct user_regs_struct *regs, int
 // Handle rename syscall - renaming files (often used by ransomware)
 static void handle_rename(SyscallContext *ctx, struct user_regs_struct *regs, int entry, 
                          EventHandler handler, void *user_data) {
+    // Mark unused parameters
+    (void)regs;
+    (void)entry;
+    
     if (!handler) return;
     
     char *oldpath = ctx->path_buffer;
@@ -501,6 +527,10 @@ static void handle_rename(SyscallContext *ctx, struct user_regs_struct *regs, in
 // Handle chmod syscall - changing file permissions
 static void handle_chmod(SyscallContext *ctx, struct user_regs_struct *regs, int entry, 
                         EventHandler handler, void *user_data) {
+    // Mark unused parameters
+    (void)regs;
+    (void)entry;
+    
     if (!handler) return;
     
     Event event;
@@ -530,6 +560,10 @@ static void handle_chmod(SyscallContext *ctx, struct user_regs_struct *regs, int
 // Handle unlink syscall - file deletion
 static void handle_unlink(SyscallContext *ctx, struct user_regs_struct *regs, int entry, 
                          EventHandler handler, void *user_data) {
+    // Mark unused parameters
+    (void)regs;
+    (void)entry;
+    
     if (!handler) return;
     
     Event event;
@@ -567,7 +601,7 @@ static char *read_string_from_process(pid_t pid, unsigned long addr) {
             allocated += 128;
             str = realloc(str, allocated);
             if (!str) {
-                LOG_ERROR("Failed to allocate memory for string");
+                LOG_ERROR("Failed to allocate memory for string%s", "");
                 return NULL;
             }
         }
