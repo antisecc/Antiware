@@ -6,37 +6,37 @@
 
 /* Event types for unified monitoring */
 typedef enum {
-    EVENT_FILE_ACCESS,        // Any file access operation
-    EVENT_FILE_CREATE,        // File creation
-    EVENT_FILE_MODIFY,        // File modification
-    EVENT_FILE_DELETE,         // File deletion
-    EVENT_FILE_WRITE = EVENT_FILE_MODIFY,       // Alias file modification
-    EVENT_FILE_RENAME,        // File rename operation
-    EVENT_FILE_PERMISSION,    // Permission changes
-    EVENT_PROCESS_CREATE,     // Process creation
-    EVENT_PROCESS_TERMINATE,  // Process termination
-    EVENT_MEMORY_ALLOC,       // Memory allocation
-    EVENT_MEMORY_FREE,        // Memory deallocation
-    EVENT_MEMORY_PROTECT,     // Memory protection change
-    EVENT_NETWORK_CONNECT,    // Network connection
-    EVENT_REGISTRY_ACCESS,    // Registry access (Windows)
-    EVENT_REGISTRY_MODIFY,    // Registry modification (Windows)
-    EVENT_CRYPTO_API,         // Cryptographic API usage
-    EVENT_BACKUP_ACCESS,      // Backup/shadow copy access
+    EVENT_FILE_ACCESS = 0,      // Any file access operation
+    EVENT_FILE_CREATE = 1,      // File creation
+    EVENT_FILE_MODIFY = 2,      // File modification
+    EVENT_FILE_DELETE = 3,      // File deletion
+    EVENT_FILE_WRITE = EVENT_FILE_MODIFY,  // Alias for file modification
+    EVENT_FILE_RENAME = 4,      // File rename operation
+    EVENT_FILE_PERMISSION = 5,  // Permission changes
+    EVENT_PROCESS_CREATE,       // Process creation
+    EVENT_PROCESS_TERMINATE,    // Process termination
+    EVENT_MEMORY_ALLOC,         // Memory allocation
+    EVENT_MEMORY_FREE,          // Memory deallocation
+    EVENT_MEMORY_PROTECT,       // Memory protection change
+    EVENT_NETWORK_CONNECT,      // Network connection
+    EVENT_REGISTRY_ACCESS,      // Registry access (Windows)
+    EVENT_REGISTRY_MODIFY,      // Registry modification (Windows)
+    EVENT_CRYPTO_API,           // Cryptographic API usage
+    EVENT_BACKUP_ACCESS,        // Backup/shadow copy access
     
     // Additional process-related events
-    EVENT_PROCESS_SUSPICIOUS, // Suspicious process behavior
-    EVENT_PROCESS_BEHAVIOR,   // General process behavior
-    EVENT_PROCESS_PRIVESC,    // Privilege escalation attempts
+    EVENT_PROCESS_SUSPICIOUS,   // Suspicious process behavior
+    EVENT_PROCESS_BEHAVIOR,     // General process behavior
+    EVENT_PROCESS_PRIVESC,      // Privilege escalation attempts
     
     // Additional memory-related events
-    EVENT_MEMORY_RWX,         // Executable and writable memory detected
-    EVENT_MEMORY_PATTERN,     // Suspicious memory allocation pattern
-    EVENT_MEMORY_USAGE,       // Unusual memory usage
-    EVENT_MEMORY_MODIFIED,    // Modification of executable memory
+    EVENT_MEMORY_RWX,           // Executable and writable memory detected
+    EVENT_MEMORY_PATTERN,       // Suspicious memory allocation pattern
+    EVENT_MEMORY_USAGE,         // Unusual memory usage
+    EVENT_MEMORY_MODIFIED,      // Modification of executable memory
     
     // Alert events
-    EVENT_DETECTION_ALERT     // Security detection alerts
+    EVENT_DETECTION_ALERT       // Security detection alerts
 } EventType;
 
 /* Generic event structure */
