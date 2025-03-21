@@ -130,4 +130,16 @@ typedef struct {
     int has_suspicious_allocation_pattern;
 } MemoryStats;
 
+typedef struct {
+    float file_access_rate;
+    int spawn_rate;
+    int is_from_suspicious_location;
+    int has_suspicious_name;
+    int has_suspicious_cmdline;
+    int has_elevated_privileges;
+    int has_rapid_file_access;
+    int has_rapid_process_spawning;
+    float suspicion_score;
+} ProcessStats;
+
 #endif /* ANTIRANSOM_H */

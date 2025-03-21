@@ -13,6 +13,7 @@
 #include <time.h>
 #include <ctype.h>
 #include <limits.h>
+#include <strings.h>
 
 #include "../include/antiransom.h"
 #include "../include/events.h"
@@ -139,7 +140,7 @@ int process_monitor_init(EventHandler handler, void* user_data) {
 // Clean up resources
 void process_monitor_cleanup(void) {
     process_count = 0;
-    LOG_INFO("Process monitor cleaned up");
+    LOG_INFO("Process monitor cleaned up%s", "");
 }
 
 // Poll processes for changes
@@ -191,6 +192,10 @@ void process_monitor_poll(void) {
 
 // Register a file access event for a process
 void process_monitor_file_access(pid_t pid, const char* path, int write_access) {
+    // Mark unused parameters
+    (void)path;          // Explicitly mark parameter as unused
+    (void)write_access;  // Explicitly mark parameter as unused
+    
     ProcessInfo* proc = find_process_info(pid);
     if (!proc) {
         // Process not monitored yet, add it
@@ -464,7 +469,7 @@ static void update_process_info(ProcessInfo* proc) {
             } else if (strncmp(line, "PPid:", 5) == 0) {
                 sscanf(line, "PPid: %d", &proc->ppid);
             } else if (strncmp(line, "Uid:", 4) == 0) {
-                sscanf(line, "Uid: %d %d", &proc->uid, &proc->euid);
+                sscanf(line, "Uid: %u %u", &proc->uid, &proc->euid);
             }
             line = strtok(NULL, "\n");
         }
@@ -878,22 +883,4 @@ static int is_process_alive(pid_t pid) {
     char path[64];
     snprintf(path, sizeof(path), "/proc/%d", pid);
     return access(path, F_OK) == 0;
-}
-
-// Utility function for case-insensitive substring search
-// Implementation of strcasestr if not available
-static char* strcasestr(const char* haystack, const char* needle) {
-    if (!haystack || !needle) return NULL;
-    
-    size_t needle_len = strlen(needle);
-    if (needle_len == 0) return (char*)haystack;
-    
-    while (*haystack) {
-        if (strncasecmp(haystack, needle, needle_len) == 0) {
-            return (char*)haystack;
-        }
-        haystack++;
-    }
-    
-    return NULL;
 }

@@ -58,6 +58,7 @@ typedef struct {
             char image_path[512];
             char command_line[1024];
             char details[256];       // Add details field for process events
+            char comm[256];
         } process_event;
         
         struct {
