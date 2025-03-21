@@ -10,6 +10,7 @@
 #include "../include/events.h"
 #include "../common/logger.h"
 #include "../common/scoring.h"
+#include "../common/config.h"
 
 // Maximum monitored processes
 #define MAX_MONITORED_PROCESSES 1024
@@ -44,18 +45,22 @@ static void check_process_behavior(ProcessMonitor *monitor);
 static int is_sensitive_file_type(const char *path);
 static void update_detection_score(ProcessMonitor *monitor);
 
+// Forward declarations for logger functions
+extern void logger_detection(const DetectionContext *context, const char *message);
+extern void logger_action(ResponseAction action, pid_t pid, const char *process_name);
+
 // Initialize the detection system
 int detection_init(void) {
     monitored_processes = malloc(MAX_MONITORED_PROCESSES * sizeof(ProcessMonitor));
     if (!monitored_processes) {
-        LOG_ERROR("Failed to allocate memory for process monitors");
+        LOG_ERROR("Failed to allocate memory for process monitors%s", "");
         return -1;
     }
     
     memset(monitored_processes, 0, MAX_MONITORED_PROCESSES * sizeof(ProcessMonitor));
     process_count = 0;
     
-    LOG_INFO("Detection system initialized");
+    LOG_INFO("Detection system initialized%s", "");
     return 0;
 }
 
@@ -67,7 +72,7 @@ void detection_cleanup(void) {
     }
     process_count = 0;
     
-    LOG_INFO("Detection system cleaned up");
+    LOG_INFO("Detection system cleaned up%s", "");
 }
 
 // Process a new event and update detection state
@@ -206,7 +211,7 @@ static void analyze_event_sequence(ProcessMonitor *monitor, const Event *new_eve
     }
     
     // Check for read-encrypt-write pattern
-    if (new_event->type == EVENT_FILE_WRITE) {
+    if (new_event->type == EVENT_FILE_MODIFY) {
         // Look for a read on the same file in recent history
         const char *write_path = new_event->data.file_event.path;
         time_t write_time = new_event->timestamp;
@@ -456,7 +461,7 @@ int detection_get_suspicious_processes(DetectionContext **contexts, size_t max_c
     }
     
     int count = 0;
-    for (size_t i = 0; i < process_count && count < max_count; i++) {
+    for (size_t i = 0; i < process_count && (size_t)count < max_count; i++) {
         if (monitored_processes[i].context.severity >= SEVERITY_LOW) {
             contexts[count++] = &monitored_processes[i].context;
         }
