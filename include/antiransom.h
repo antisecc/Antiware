@@ -142,4 +142,14 @@ typedef struct {
     float suspicion_score;
 } ProcessStats;
 
+// Add this structure definition:
+typedef struct {
+    int rapid_file_access;
+    int high_file_io;
+    int multiple_file_extension_changes;
+    int multiple_file_renames;
+    int memory_pattern;
+    int system_changes;
+} BehaviorFlags;
+
 #endif /* ANTIRANSOM_H */

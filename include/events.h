@@ -9,7 +9,8 @@ typedef enum {
     EVENT_FILE_ACCESS,        // Any file access operation
     EVENT_FILE_CREATE,        // File creation
     EVENT_FILE_MODIFY,        // File modification
-    EVENT_FILE_DELETE,        // File deletion
+    EVENT_FILE_DELETE,         // File deletion
+    EVENT_FILE_WRITE = EVENT_FILE_MODIFY,       // Alias file modification
     EVENT_FILE_RENAME,        // File rename operation
     EVENT_FILE_PERMISSION,    // Permission changes
     EVENT_PROCESS_CREATE,     // Process creation

@@ -83,6 +83,13 @@ static int get_process_exe_path(pid_t pid, char *buffer, size_t buffer_size);
 static int get_process_name(pid_t pid, char *buffer, size_t buffer_size);
 static float calculate_trust_adjustment(pid_t pid, const char *process_name);
 
+// Function declarations
+int user_filter_add_whitelist(const char *process_name, const char *path_pattern, 
+                            int exclude_children, int trusted_level);
+int user_filter_add_signature(const char *process_name, const char *path_pattern, 
+                            const char *cmdline_regex, const char *description, 
+                            BehaviorFlags allowed_behaviors);
+
 // Initialize the user filter
 int user_filter_init(void) {
     // Get current user info
@@ -197,19 +204,19 @@ void user_filter_cleanup(void) {
         }
     }
     
-    LOG_INFO("User filter cleaned up");
+    LOG_INFO("User filter cleaned up%s", "");
 }
 
 // Add a process to the whitelist
 int user_filter_add_whitelist(const char *process_name, const char *path_pattern, 
                              int exclude_children, int trusted_level) {
     if (whitelist_count >= MAX_WHITELIST_ENTRIES) {
-        LOG_ERROR("Failed to add process to whitelist: maximum entries reached");
+        LOG_ERROR("Failed to add process to whitelist: maximum entries reached%s", "");
         return -1;
     }
     
     if (!process_name || !path_pattern) {
-        LOG_ERROR("Failed to add process to whitelist: invalid parameters");
+        LOG_ERROR("Failed to add process to whitelist: invalid parameters%s", "");
         return -1;
     }
     
@@ -253,12 +260,12 @@ int user_filter_add_signature(const char *process_name, const char *path_pattern
                              const char *cmdline_regex, const char *description, 
                              BehaviorFlags allowed_behaviors) {
     if (signature_count >= MAX_PROCESS_SIGNATURES) {
-        LOG_ERROR("Failed to add process signature: maximum entries reached");
+        LOG_ERROR("Failed to add process signature: maximum entries reached%s", "");
         return -1;
     }
     
     if (!process_name || !path_pattern) {
-        LOG_ERROR("Failed to add process signature: invalid parameters");
+        LOG_ERROR("Failed to add process signature: invalid parameters%s", "");
         return -1;
     }
     
@@ -432,7 +439,7 @@ int user_filter_check_event(const Event *event) {
 int user_filter_whitelist_behavior(BehaviorFlags behavior, int is_whitelisted) {
     BehaviorPattern *pattern = find_behavior_pattern(behavior);
     if (!pattern) {
-        LOG_ERROR("Behavior pattern not found for whitelisting");
+        LOG_ERROR("Behavior pattern not found for whitelisting%s", "");
         return -1;
     }
     
@@ -604,7 +611,7 @@ static BehaviorPattern* find_behavior_pattern(BehaviorFlags flags) {
 // Add a new behavior pattern
 static void add_behavior_pattern(BehaviorFlags flags, const char *description) {
     if (pattern_count >= MAX_BEHAVIOR_PATTERNS) {
-        LOG_ERROR("Failed to add behavior pattern: maximum entries reached");
+        LOG_ERROR("Failed to add behavior pattern: maximum entries reached%s", "");
         return;
     }
     
@@ -735,8 +742,11 @@ static int get_process_name(pid_t pid, char *buffer, size_t buffer_size) {
     return len;
 }
 
-// Calculate trust adjustment based on process information
+// In calculate_trust_adjustment function (line 739):
 static float calculate_trust_adjustment(pid_t pid, const char *process_name) {
+    // Mark unused parameter
+    (void)process_name;  // Explicitly mark parameter as unused
+    
     float trust_adjustment = 0.0f;
     
     // Check process origin
@@ -816,7 +826,7 @@ static float calculate_trust_adjustment(pid_t pid, const char *process_name) {
         char line[256];
         while (fgets(line, sizeof(line), status_file)) {
             if (strncmp(line, "Uid:", 4) == 0) {
-                sscanf(line + 4, "%d", &process_uid);
+                sscanf(line + 4, "%u", &process_uid);
                 break;
             }
         }
