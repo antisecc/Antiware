@@ -73,7 +73,7 @@ static void print_version(void) {
 // Initialize common components before delegating to platform-specific code
 static int initialize_common(void) {
     // Initialize basic logging (will be reconfigured by platform-specific code)
-    logger_init(LOG_TO_STDOUT, LOG_LEVEL_INFO);
+    log_init(LOG_TO_STDOUT, LOG_LEVEL_INFO);
     
     LOG_INFO("AntiRansom v%s initializing", ANTIRANSOM_VERSION);
     
