@@ -527,22 +527,36 @@ static void analyze_process(ProcessInfo* proc) {
     // Generate events for highly suspicious processes
     if (proc->suspicion_score > 50.0f) {
         char details[512];
+        char cmdline_truncated[128] = {0};
+        char path_truncated[128] = {0};
+
+        // Safely truncate the command line and path
+        strncpy(cmdline_truncated, proc->cmdline, sizeof(cmdline_truncated)-1);
+        cmdline_truncated[sizeof(cmdline_truncated)-1] = '\0';
+
+        strncpy(path_truncated, proc->exe_path, sizeof(path_truncated)-1);
+        path_truncated[sizeof(path_truncated)-1] = '\0';
+
+        // Build suspicion flags string separately
+        char flags[128] = {0};
+        if (proc->is_from_suspicious_location) strcat(flags, "Location ");
+        if (proc->has_suspicious_name) strcat(flags, "Name ");
+        if (proc->has_suspicious_cmdline) strcat(flags, "Cmdline ");
+        if (proc->has_elevated_privileges) strcat(flags, "Privesc ");
+        if (proc->has_rapid_file_access) strcat(flags, "FileAccess ");
+        if (proc->has_rapid_process_spawning) strcat(flags, "Spawning");
+
+        // Format with the truncated strings
         snprintf(details, sizeof(details), 
-                "Suspicious process detected: %s (PID: %d)\n"
-                "Command: %s\n"
+                "Suspicious: %s (PID: %d) UID: %d→%d\n"
+                "CMD: %s\n"
                 "Path: %s\n"
-                "UID: %d / EUID: %d\n"
-                "Suspicion flags: %s%s%s%s%s%s",
+                "Flags: %s",
                 proc->comm, proc->pid,
-                proc->cmdline,
-                proc->exe_path,
                 proc->uid, proc->euid,
-                proc->is_from_suspicious_location ? "SuspiciousLocation " : "",
-                proc->has_suspicious_name ? "SuspiciousName " : "",
-                proc->has_suspicious_cmdline ? "SuspiciousCmdline " : "",
-                proc->has_elevated_privileges ? "PrivilegeEscalation " : "",
-                proc->has_rapid_file_access ? "RapidFileAccess " : "",
-                proc->has_rapid_process_spawning ? "RapidSpawning" : "");
+                cmdline_truncated,
+                path_truncated,
+                flags);
         
         generate_process_event(proc->pid, EVENT_PROCESS_SUSPICIOUS, details, 20.0f);
     }
