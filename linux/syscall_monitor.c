@@ -672,17 +672,3 @@ static uint8_t calculate_file_entropy(const char *path) {
     uint8_t scaled_entropy = (uint8_t)(entropy * 100.0 / 8.0);
     return scaled_entropy;
 }
-
-// Implement these functions:
-
-int syscall_monitor_start(void) {
-    LOG_INFO("Starting syscall monitor%s", "");
-    // Implementation specific to your syscall monitoring approach
-    // This could involve setting up BPF, ptrace, or other methods
-    return 0; // Return success
-}
-
-void syscall_monitor_stop(void) {
-    LOG_INFO("Stopping syscall monitor%s", "");
-    // Cleanup resources
-}

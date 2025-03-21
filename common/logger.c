@@ -32,14 +32,12 @@ static struct {
 // Convert LogLevel to string representation
 static const char* level_to_string(LogLevel level) {
     switch (level) {
-        case LOG_LEVEL_DEBUG:     return "DEBUG";
-        case LOG_LEVEL_INFO:      return "INFO";
-        case LOG_LEVEL_WARNING:   return "WARNING";
-        case LOG_LEVEL_ERROR:     return "ERROR";
-        case LOG_LEVEL_FATAL:     return "FATAL";
-        case LOG_LEVEL_DETECTION: return "DETECTION";  // Add this line
-        case LOG_LEVEL_ACTION:    return "ACTION";     // Add this line
-        default:                  return "UNKNOWN";
+        case LOG_LEVEL_DEBUG:   return "DEBUG";
+        case LOG_LEVEL_INFO:    return "INFO";
+        case LOG_LEVEL_WARNING: return "WARNING";
+        case LOG_LEVEL_ERROR:   return "ERROR";
+        case LOG_LEVEL_FATAL:   return "FATAL";
+        default:                return "UNKNOWN";
     }
 }
 
@@ -47,14 +45,12 @@ static const char* level_to_string(LogLevel level) {
 #ifdef __linux__
 static int level_to_syslog(LogLevel level) {
     switch (level) {
-        case LOG_LEVEL_DEBUG:     return LOG_DEBUG;
-        case LOG_LEVEL_INFO:      return LOG_INFO;
-        case LOG_LEVEL_WARNING:   return LOG_WARNING;
-        case LOG_LEVEL_ERROR:     return LOG_ERR;
-        case LOG_LEVEL_FATAL:     return LOG_CRIT;
-        case LOG_LEVEL_DETECTION: return LOG_ALERT;    // Add this line
-        case LOG_LEVEL_ACTION:    return LOG_NOTICE;   // Add this line
-        default:                  return LOG_NOTICE;
+        case LOG_LEVEL_DEBUG:   return LOG_DEBUG;
+        case LOG_LEVEL_INFO:    return LOG_INFO;
+        case LOG_LEVEL_WARNING: return LOG_WARNING;
+        case LOG_LEVEL_ERROR:   return LOG_ERR;
+        case LOG_LEVEL_FATAL:   return LOG_CRIT;
+        default:                return LOG_NOTICE;
     }
 }
 #endif
@@ -230,62 +226,4 @@ void log_fatal(const char* file, int line, const char* format, ...) {
     va_end(args);
     
     write_log_message(LOG_LEVEL_FATAL, file, line, message);
-}
-
-void logger_detection(const char* message, ...) {
-    va_list args;
-    va_start(args, message);
-    logger_log(LOG_LEVEL_DETECTION, NULL, message, args);
-    va_end(args);
-}
-
-void logger_action(const char* message, ...) {
-    va_list args;
-    va_start(args, message);
-    logger_log(LOG_LEVEL_ACTION, NULL, message, args);
-    va_end(args);
-}
-
-void logger_log(LogLevel level, const char* file, const char* format, va_list args) {
-    if (!logger_state.initialized || level < logger_state.current_level) {
-        return;
-    }
-    
-    char message[1024];
-    vsnprintf(message, sizeof(message), format, args);
-    
-    // If file is NULL, use a placeholder
-    const char* source_file = file ? file : "unknown";
-    
-    // Get current time
-    time_t now = time(NULL);
-    struct tm *tm_info = localtime(&now);
-    char timestamp[20];
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
-    
-    // Create formatted message with timestamp and level
-    char full_message[1024];
-    snprintf(full_message, sizeof(full_message), "[%s] [%s] %s", 
-             timestamp, level_to_string(level), message);
-    
-    // Output based on destination
-    switch (logger_state.destination) {
-        case LOG_TO_STDOUT:
-            printf("%s\n", full_message);
-            fflush(stdout);
-            break;
-            
-        case LOG_TO_FILE:
-            if (logger_state.log_file) {
-                fprintf(logger_state.log_file, "%s\n", full_message);
-                fflush(logger_state.log_file);
-            }
-            break;
-            
-        case LOG_TO_SYSLOG:
-#ifdef __linux__
-            syslog(level_to_syslog(level), "%s", message);
-#endif
-            break;
-    }
 }

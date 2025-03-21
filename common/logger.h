@@ -3,12 +3,10 @@
 
 typedef enum {
     LOG_LEVEL_DEBUG = 0,
-    LOG_LEVEL_INFO = 1,
-    LOG_LEVEL_WARNING = 2,
-    LOG_LEVEL_ERROR = 3,
-    LOG_LEVEL_FATAL = 4,
-    LOG_LEVEL_DETECTION = 5,  // Add this line
-    LOG_LEVEL_ACTION = 6      // Add this line
+    LOG_LEVEL_INFO,
+    LOG_LEVEL_WARNING,
+    LOG_LEVEL_ERROR,
+    LOG_LEVEL_FATAL
 } LogLevel;
 
 typedef enum {
@@ -29,8 +27,6 @@ void log_info(const char* file, int line, const char* format, ...);
 void log_warning(const char* file, int line, const char* format, ...);
 void log_error(const char* file, int line, const char* format, ...);
 void log_fatal(const char* file, int line, const char* format, ...);
-void logger_detection(const char* message, ...);
-void logger_action(const char* message, ...);
 
 // Convenient macros
 #define LOG_DEBUG(format, ...) log_debug(__FILE__, __LINE__, format "%s", ##__VA_ARGS__, "")
