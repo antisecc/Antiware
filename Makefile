@@ -9,27 +9,27 @@ LDFLAGS = -lpthread -lrt
 BUILD_TYPE ?= debug
 
 ifeq ($(BUILD_TYPE), debug)
-    CFLAGS += -g -O0 -DDEBUG
+	CFLAGS += -g -O0 -DDEBUG
 else
-    CFLAGS += -O2 -DNDEBUG
+	CFLAGS += -O2 -DNDEBUG
 endif
 
 # Platform detection
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
-    PLATFORM = linux
-    PLATFORM_CFLAGS = 
-    PLATFORM_LDFLAGS = -lpthread -lrt
+	PLATFORM = linux
+	PLATFORM_CFLAGS = 
+	PLATFORM_LDFLAGS = -lpthread -lrt
 endif
 ifeq ($(UNAME_S),Darwin)
-    PLATFORM = macos
-    PLATFORM_CFLAGS = 
-    PLATFORM_LDFLAGS = 
+	PLATFORM = macos
+	PLATFORM_CFLAGS = 
+	PLATFORM_LDFLAGS = 
 endif
 ifneq (,$(findstring MINGW,$(UNAME_S)))
-    PLATFORM = windows
-    PLATFORM_CFLAGS = -D_WIN32_WINNT=0x0600
-    PLATFORM_LDFLAGS = -lpsapi -lws2_32
+	PLATFORM = windows
+	PLATFORM_CFLAGS = -D_WIN32_WINNT=0x0600
+	PLATFORM_LDFLAGS = -lpsapi -lws2_32
 endif
 
 # Directories
@@ -42,43 +42,43 @@ BUILD_DIR = ./build
 BIN_DIR = ./bin
 
 # Output binary
-TARGET = $(BIN_DIR)/antiransom
+TARGET = $(BIN_DIR)/antiware
 ifeq ($(PLATFORM),windows)
-    TARGET = $(BIN_DIR)/antiransom.exe
+	TARGET = $(BIN_DIR)/antiware.exe
 endif
 
 # Common source files
 COMMON_SOURCES = \
-    $(SRC_DIR)/main.c \
-    $(COMMON_DIR)/logger.c \
-    $(COMMON_DIR)/config.c \
-    $(COMMON_DIR)/scoring.c
+	$(SRC_DIR)/main.c \
+	$(COMMON_DIR)/logger.c \
+	$(COMMON_DIR)/config.c \
+	$(COMMON_DIR)/scoring.c
 
 # Platform-specific source files
 LINUX_SOURCES = \
-    $(LINUX_DIR)/main.c \
-    $(LINUX_DIR)/detection.c \
-    $(LINUX_DIR)/syscall_monitor.c \
-    $(LINUX_DIR)/memory_monitor.c \
-    $(LINUX_DIR)/process_monitor.c \
-    $(LINUX_DIR)/user_filter.c
+	$(LINUX_DIR)/main.c \
+	$(LINUX_DIR)/detection.c \
+	$(LINUX_DIR)/syscall_monitor.c \
+	$(LINUX_DIR)/memory_monitor.c \
+	$(LINUX_DIR)/process_monitor.c \
+	$(LINUX_DIR)/user_filter.c
 
 WINDOWS_SOURCES = \
-    $(WINDOWS_DIR)/main.c \
-    $(WINDOWS_DIR)/detection.c \
-    $(WINDOWS_DIR)/api_monitor.c \
-    $(WINDOWS_DIR)/memory_monitor.c \
-    $(WINDOWS_DIR)/process_monitor.c \
-    $(WINDOWS_DIR)/user_filter.c
+	$(WINDOWS_DIR)/main.c \
+	$(WINDOWS_DIR)/detection.c \
+	$(WINDOWS_DIR)/api_monitor.c \
+	$(WINDOWS_DIR)/memory_monitor.c \
+	$(WINDOWS_DIR)/process_monitor.c \
+	$(WINDOWS_DIR)/user_filter.c
 
 # Select sources based on platform
 ifeq ($(PLATFORM),linux)
-    PLATFORM_SOURCES = $(LINUX_SOURCES)
+	PLATFORM_SOURCES = $(LINUX_SOURCES)
 else ifeq ($(PLATFORM),windows)
-    PLATFORM_SOURCES = $(WINDOWS_SOURCES)
+	PLATFORM_SOURCES = $(WINDOWS_SOURCES)
 else
-    # Default to Linux if we can't detect platform
-    PLATFORM_SOURCES = $(LINUX_SOURCES)
+	# Default to Linux if we can't detect platform
+	PLATFORM_SOURCES = $(LINUX_SOURCES)
 endif
 
 # All objects
@@ -91,50 +91,50 @@ all: dirs $(TARGET)
 
 # Create necessary directories
 dirs:
-    @mkdir -p $(BUILD_DIR)/$(COMMON_DIR)
-    @mkdir -p $(BUILD_DIR)/$(LINUX_DIR)
-    @mkdir -p $(BUILD_DIR)/$(WINDOWS_DIR)
-    @mkdir -p $(BIN_DIR)
+	@mkdir -p $(BUILD_DIR)/$(COMMON_DIR)
+	@mkdir -p $(BUILD_DIR)/$(LINUX_DIR)
+	@mkdir -p $(BUILD_DIR)/$(WINDOWS_DIR)
+	@mkdir -p $(BIN_DIR)
 
 # Build the target
 $(TARGET): $(ALL_OBJECTS)
-    $(CC) -o $(BIN_DIR)/$(TARGET) $(OBJECTS) -lpthread -lrt -lpthread -lrt -lm
+	$(CC) -o $(BIN_DIR)/$(TARGET) $(OBJECTS) -lpthread -lrt -lpthread -lrt -lm
 
 # Generic rule for object files
 $(BUILD_DIR)/%.o: %.c
-    @mkdir -p $(dir $@)
-    $(CC) $(CFLAGS) $(PLATFORM_CFLAGS) -I$(INCLUDE_DIR) -c $< -o $@
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(PLATFORM_CFLAGS) -I$(INCLUDE_DIR) -c $< -o $@
 
 # Platform-specific targets
 linux:
-    $(MAKE) PLATFORM=linux
+	$(MAKE) PLATFORM=linux
 
 windows:
-    $(MAKE) PLATFORM=windows
+	$(MAKE) PLATFORM=windows
 
 # Install the binary
 install: $(TARGET)
-    @mkdir -p /usr/local/bin
-    cp $(TARGET) /usr/local/bin/antiransom
-    @echo "Installed to /usr/local/bin/antiransom"
+	@mkdir -p /usr/local/bin
+	cp $(TARGET) /usr/local/bin/antiware
+	@echo "Installed to /usr/local/bin/antiware"
 
 # Clean build artifacts
 clean:
-    rm -rf $(BUILD_DIR) $(BIN_DIR)
+	rm -rf $(BUILD_DIR) $(BIN_DIR)
 
 # Show available targets
 help:
-    @echo "AntiRansom Makefile"
-    @echo ""
-    @echo "Available targets:"
-    @echo "  all       - Build for detected platform ($(PLATFORM))"
-    @echo "  linux     - Build for Linux platform"
-    @echo "  windows   - Build for Windows platform"
-    @echo "  install   - Install binary to /usr/local/bin (Linux only)"
-    @echo "  clean     - Remove build artifacts"
-    @echo "  help      - Show this help message"
-    @echo ""
-    @echo "Options:"
-    @echo "  BUILD_TYPE=debug|release (default: debug)"
+	@echo "antiware Makefile"
+	@echo ""
+	@echo "Available targets:"
+	@echo "  all       - Build for detected platform ($(PLATFORM))"
+	@echo "  linux     - Build for Linux platform"
+	@echo "  windows   - Build for Windows platform"
+	@echo "  install   - Install binary to /usr/local/bin (Linux only)"
+	@echo "  clean     - Remove build artifacts"
+	@echo "  help      - Show this help message"
+	@echo ""
+	@echo "Options:"
+	@echo "  BUILD_TYPE=debug|release (default: debug)"
 
 .PHONY: all linux windows dirs install clean help
