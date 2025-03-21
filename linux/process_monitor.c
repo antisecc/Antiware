@@ -546,17 +546,42 @@ static void analyze_process(ProcessInfo* proc) {
         if (proc->has_rapid_file_access) strcat(flags, "FileAccess ");
         if (proc->has_rapid_process_spawning) strcat(flags, "Spawning");
 
-        // Format with the truncated strings
-        snprintf(details, sizeof(details), 
-                "Suspicious: %s (PID: %d) UID: %d→%d\n"
-                "CMD: %s\n"
-                "Path: %s\n"
-                "Flags: %s",
-                proc->comm, proc->pid,
-                proc->uid, proc->euid,
-                cmdline_truncated,
-                path_truncated,
-                flags);
+        // First create a basic process identification string
+        char *p = details;
+        int remaining = sizeof(details);
+        int n;
+
+        // Format the first line with basic process info - this has predictable length
+        n = snprintf(p, remaining, 
+                     "Suspicious: %.32s (PID: %d) UID: %d→%d\n", 
+                     proc->comm, proc->pid, proc->uid, proc->euid);
+        if (n > 0 && n < remaining) {
+            p += n;
+            remaining -= n;
+        }
+
+        // Add command line if there's room
+        if (remaining > 20) {  // Ensure enough space for reasonable output
+            n = snprintf(p, remaining, "CMD: %.100s\n", cmdline_truncated);
+            if (n > 0 && n < remaining) {
+                p += n;
+                remaining -= n;
+            }
+        }
+
+        // Add path if there's room
+        if (remaining > 20) {
+            n = snprintf(p, remaining, "Path: %.100s\n", path_truncated);
+            if (n > 0 && n < remaining) {
+                p += n;
+                remaining -= n;
+            }
+        }
+
+        // Add flags if there's room
+        if (remaining > 20) {
+            snprintf(p, remaining, "Flags: %.100s", flags);
+        }
         
         generate_process_event(proc->pid, EVENT_PROCESS_SUSPICIOUS, details, 20.0f);
     }
