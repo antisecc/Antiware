@@ -320,11 +320,15 @@ static void detect_rwx_regions(ProcessMemory* process) {
                 
                 // Generate event for new RWX region
                 char details[256];
+                char pathname_truncated[128];
+                strncpy(pathname_truncated, process->regions[i].pathname, sizeof(pathname_truncated)-1);
+                pathname_truncated[sizeof(pathname_truncated)-1] = '\0';  // Ensure null termination
+
                 snprintf(details, sizeof(details), 
                        "New RWX memory region: %lx-%lx (%lu KB) %s",
                        process->regions[i].start, process->regions[i].end,
                        process->regions[i].size / 1024,
-                       process->regions[i].pathname);
+                       pathname_truncated);
                 
                 // Higher score impact for regions with no pathname (anonymous mappings)
                 float score_impact = process->regions[i].pathname[0] ? 10.0f : 15.0f;
@@ -423,11 +427,15 @@ static void detect_code_modifications(ProcessMemory* process) {
                         process->has_modified_executable_region = 1;
                         
                         char details[256];
+                        char pathname_truncated[128];
+                        strncpy(pathname_truncated, process->regions[i].pathname, sizeof(pathname_truncated)-1);
+                        pathname_truncated[sizeof(pathname_truncated)-1] = '\0';  // Ensure null termination
+
                         snprintf(details, sizeof(details), 
                                "Modified executable memory: %lx-%lx (%lu KB) %s",
                                process->regions[i].start, process->regions[i].end,
                                process->regions[i].size / 1024,
-                               process->regions[i].pathname);
+                               pathname_truncated);
                         
                         // Higher score for anonymous mappings vs. named mappings
                         float score_impact = process->regions[i].pathname[0] ? 15.0f : 25.0f;
