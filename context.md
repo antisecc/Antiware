@@ -66,6 +66,30 @@ The scoring system employs a weighted approach to evaluate potential threats:
 | Process Location | 0.5 | Execution from temporary or suspicious locations |
 | Process Behavior | 0.6 | Rapid file access, spawning patterns |
 
+### False Positive Reduction
+
+The user_filter.c module implements several strategies for minimizing false positives:
+
+1. **Process Whitelisting**
+   - System utilities and known good applications are whitelisted
+   - Whitelisted processes can be excluded from monitoring completely
+   - Child processes of trusted applications can inherit whitelist status
+
+2. **Behavior Pattern Recognition**
+   - Common legitimate patterns such as backups, system updates, and software compilation are recognized
+   - Similar patterns can be marked as whitelisted when confirmed as benign
+   - Frequency tracking helps identify recurring legitimate user behaviors
+
+3. **Process Trust Scoring**
+   - Process origin (system paths vs user paths) affects trust level
+   - Long-running processes gain additional trust over time
+   - Process ownership (system vs user) is factored into trust calculations
+
+4. **Contextual Analysis**
+   - File operations in expected locations receive lower suspicion scores
+   - Process signatures for common applications define expected behaviors
+   - Command-line patterns help identify known legitimate software
+
 ### Response Thresholds:
 
 - **Low (30+)**: Begin enhanced monitoring, log suspicious activity
@@ -81,8 +105,37 @@ The scoring system employs a weighted approach to evaluate potential threats:
 - Filesystem monitoring with inotify
 - Process monitoring via /proc filesystem
 - Memory monitoring via /proc/[pid]/maps
+- User activity filtering via /proc analysis and behavior patterns
 
 ## Linux Monitoring Implementation
+
+### User Filter
+
+The Linux user filter system provides intelligent false positive reduction through:
+
+1. **Process Whitelist Management**
+   - Maintains a database of trusted processes by executable path and name
+   - Assigns trust levels (0-100) to different applications
+   - Supports pattern matching for executable paths
+   - Controls whether child processes inherit whitelist status
+
+2. **Process Signature Recognition**
+   - Captures known-good behavior patterns for specific applications
+   - Uses regex pattern matching for command-line verification
+   - Associates allowed behavior flags with specific applications
+   - Provides detailed descriptions for logging and reporting
+
+3. **Behavior Pattern Classification**
+   - Groups common system behaviors (backups, updates, compilation)
+   - Tracks frequency of observed patterns to improve accuracy
+   - Allows runtime whitelisting of recurring patterns
+   - Maintains history to improve detection accuracy over time
+
+4. **Score Adjustment Algorithm**
+   - Applies contextual trust modifiers to suspicion scores
+   - Factors in process origin, lifespan, and ownership
+   - Adjusts based on pattern matching and behavior recognition
+   - Preserves minimum score for non-excluded processes
 
 ### Syscall Monitoring
 
@@ -163,15 +216,6 @@ Process monitoring tracks:
 3. Short-lived processes performing file operations
 4. Unexpected process creation chains
 
-### False Positive Reduction
-
-The false positive filtering system:
-
-1. Maintains process and application whitelists
-2. Tracks normal user behavior patterns
-3. Applies contextual scoring based on process reputation
-4. Filters out known good operations (backups, updates, etc.)
-
 ### Linux-Specific Scoring Adjustments
 
 | Behavior | Base Score | Multiplier Conditions |
@@ -186,6 +230,45 @@ The false positive filtering system:
 | Process with suspicious name | 10 | ×2 if multiple suspicious indicators present |
 | Rapid file access | 15 | Scaled with access rate (higher = more suspicious) |
 | Rapid process spawning | 10 | Scaled with spawn rate |
+
+## Component Dependencies
+
+### User Filter Dependencies
+- **Common Headers**: 
+  - antiransom.h: Core definitions and structures
+  - events.h: Event type definitions
+  - logger.h: Logging functions
+  - config.h: Configuration settings
+  - scoring.h: Scoring system functions
+
+- **Linux Components**:
+  - detection.c: Uses user_filter to adjust suspicion scores
+  - syscall_monitor.c: Passes events through user_filter before processing
+  - memory_monitor.c: Coordinates with user_filter for behavior pattern validation
+  - process_monitor.c: Consults user_filter for process legitimacy evaluation
+
+## Future Optimizations
+
+### User Filter Optimizations
+- Implement caching of process verification results
+- Add machine learning capabilities to improve pattern recognition
+- Provide user feedback mechanism to report false positives
+- Develop automatic signature generation for common applications
+- Create centralized reputation database for processes and behaviors
+
+### Build System Enhancements
+- Support for CMake as an alternative build system
+- Integration with package management tools (deb, rpm)
+- Automated dependency resolution
+- Cross-compilation support for different architectures
+- Unit test integration and coverage reporting
+
+### Main Program Enhancements
+- GUI interface option for desktop environments
+- Remote management API for enterprise deployments
+- Plugin architecture for custom detection modules
+- Integration with system notification mechanisms
+- Automated update capabilities
 
 ## Future Scope
 
