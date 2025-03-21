@@ -79,13 +79,13 @@ int linux_main(int argc, char* argv[]) {
     // Initialize logging
     initialize_logging();
     
-    LOG_INFO("AntiRansom Linux implementation starting up");
+    LOG_INFO("AntiRansom Linux implementation starting up%s", "");
     
     // Handle daemon mode if requested
     if (daemon_mode) {
-        LOG_INFO("Starting in daemon mode");
+        LOG_INFO("Starting in daemon mode%s", "");
         if (daemonize() != 0) {
-            LOG_ERROR("Failed to start daemon mode");
+            LOG_ERROR("Failed to start daemon mode%s", "");
             return EXIT_FAILURE;
         }
     }
@@ -101,12 +101,12 @@ int linux_main(int argc, char* argv[]) {
     
     // Start syscall monitoring
     if (syscall_monitor_start() != 0) {
-        LOG_ERROR("Failed to start syscall monitoring");
+        LOG_ERROR("Failed to start syscall monitoring%s", "");
         cleanup_components();
         return EXIT_FAILURE;
     }
     
-    LOG_INFO("AntiRansom is now monitoring the system");
+    LOG_INFO("AntiRansom is now monitoring the system%s", "");
     
     // Start polling thread
     running = 1;
@@ -126,7 +126,7 @@ int linux_main(int argc, char* argv[]) {
     pthread_join(poll_thread, NULL);
     
     // Clean up and exit
-    LOG_INFO("AntiRansom shutting down");
+    LOG_INFO("AntiRansom shutting down%s", "");
     cleanup_components();
     return EXIT_SUCCESS;
 }
@@ -224,20 +224,20 @@ static void setup_signal_handlers(void) {
 static void initialize_components(void) {
     // Initialize detection system
     if (detection_init(event_callback, &config, NULL) != 0) {
-        LOG_ERROR("Failed to initialize detection system");
+        LOG_ERROR("Failed to initialize detection system%s", "");
         exit(EXIT_FAILURE);
     }
     
     // Initialize user filter
     if (user_filter_init() != 0) {
-        LOG_ERROR("Failed to initialize user filter");
+        LOG_ERROR("Failed to initialize user filter%s", "");
         detection_cleanup();
         exit(EXIT_FAILURE);
     }
     
     // Initialize process monitor
     if (process_monitor_init(event_callback, &config) != 0) {
-        LOG_ERROR("Failed to initialize process monitor");
+        LOG_ERROR("Failed to initialize process monitor%s", "");
         user_filter_cleanup();
         detection_cleanup();
         exit(EXIT_FAILURE);
@@ -245,7 +245,7 @@ static void initialize_components(void) {
     
     // Initialize memory monitor
     if (memory_monitor_init(event_callback, &config) != 0) {
-        LOG_ERROR("Failed to initialize memory monitor");
+        LOG_ERROR("Failed to initialize memory monitor%s", "");
         process_monitor_cleanup();
         user_filter_cleanup();
         detection_cleanup();
@@ -254,7 +254,7 @@ static void initialize_components(void) {
     
     // Initialize syscall monitor (must be last)
     if (syscall_monitor_init(event_callback, &config) != 0) {
-        LOG_ERROR("Failed to initialize syscall monitor");
+        LOG_ERROR("Failed to initialize syscall monitor%s", "");
         memory_monitor_cleanup();
         process_monitor_cleanup();
         user_filter_cleanup();
@@ -262,7 +262,7 @@ static void initialize_components(void) {
         exit(EXIT_FAILURE);
     }
     
-    LOG_INFO("All components initialized successfully");
+    LOG_INFO("All components initialized successfully%s", "");
 }
 
 // Clean up all components
@@ -275,7 +275,7 @@ static void cleanup_components(void) {
     user_filter_cleanup();
     detection_cleanup();
     
-    LOG_INFO("All components cleaned up");
+    LOG_INFO("All components cleaned up%s", "");
 }
 
 // Polling thread function
@@ -438,7 +438,7 @@ static int daemonize(void) {
 
 // Scan for existing processes to monitor
 static void scan_running_processes(void) {
-    LOG_INFO("Scanning for existing processes to monitor");
+    LOG_INFO("Scanning for existing processes to monitor%s", "");
     
     DIR* proc_dir = opendir("/proc");
     if (!proc_dir) {
