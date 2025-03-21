@@ -60,7 +60,6 @@ static pthread_t poll_thread;
 // Function prototypes
 static void parse_arguments(int argc, char* argv[]);
 static void print_usage(const char* program_name);
-static void print_version(void);
 static void signal_handler(int signal);
 static void setup_signal_handlers(void);
 static void initialize_components(void);
@@ -71,15 +70,15 @@ static int daemonize(void);
 static void scan_running_processes(void);
 static void initialize_logging(void);
 
-// Main entry point
-int main(int argc, char* argv[]) {
+// Linux-specific entry point (called from global main.c)
+int linux_main(int argc, char* argv[]) {
     // Parse command line arguments
     parse_arguments(argc, argv);
     
     // Initialize logging
     initialize_logging();
     
-    LOG_INFO("AntiRansom v%s starting up", VERSION);
+    LOG_INFO("AntiRansom Linux implementation starting up");
     
     // Handle daemon mode if requested
     if (daemon_mode) {
@@ -119,7 +118,7 @@ int main(int argc, char* argv[]) {
     
     // Main thread now waits for signals
     if (!daemon_mode) {
-        printf("AntiRansom v%s is running. Press Ctrl+C to stop.\n", VERSION);
+        printf("AntiRansom is running. Press Ctrl+C to stop.\n");
     }
     
     // Wait for polling thread to complete (after receiving signal)
@@ -154,7 +153,7 @@ static void parse_arguments(int argc, char* argv[]) {
                 break;
                 
             case 'v':
-                print_version();
+                // Version is handled by the global main
                 exit(EXIT_SUCCESS);
                 break;
                 
@@ -188,21 +187,14 @@ static void parse_arguments(int argc, char* argv[]) {
     config_load(&config, config_path);
 }
 
-// Print program usage information
+// Print Linux-specific usage information
 static void print_usage(const char* program_name) {
     printf("Usage: %s [OPTIONS]\n\n", program_name);
-    printf("Options:\n");
+    printf("Linux-specific options:\n");
     printf("  -h, --help               Display this help message\n");
-    printf("  -v, --version            Display version information\n");
     printf("  -d, --daemon             Run as a daemon in the background\n");
     printf("  -V, --verbose            Enable verbose logging\n");
-    printf("  -c, --config=FILE        Use specified config file\n");
-}
-
-// Print version information
-static void print_version(void) {
-    printf("AntiRansom v%s\n", VERSION);
-    printf("Copyright (c) 2025 AntiRansom Team\n");
+    printf("  -c, --config=FILE        Use specified config file (default: /etc/antiransom.conf)\n");
 }
 
 // Signal handler for clean shutdown

@@ -8,6 +8,61 @@ The anti-ransomware tool is designed with a platform-independent core and platfo
 2. Platform-specific monitoring mechanisms
 3. Unified response capabilities
 
+### Program Structure
+
+The AntiRansom tool uses a layered architecture with a clear separation between platform-agnostic and platform-specific code:
+
+1. **Platform-Agnostic Entry Point (main.c)**
+   - Detects the host operating system at runtime
+   - Provides common command-line argument handling (help, version)
+   - Initializes shared components (basic logging, configuration)
+   - Dispatches execution to the appropriate platform-specific implementation
+   - Ensures graceful failure on unsupported platforms
+   - Maintains a clean abstraction layer between platforms
+
+2. **Platform-Specific Implementations**
+   - **Linux Implementation (linux/main.c)**
+     - Exports `linux_main()` function called by the global entry point
+     - Handles Linux-specific initialization and monitoring
+     - Uses ptrace for syscall monitoring and /proc for process inspection
+     - Manages Linux-specific resources and signal handling
+   
+   - **Windows Implementation (windows/main.c - future)**
+     - Will export `windows_main()` function called by the global entry point
+     - Will handle Windows-specific API hooking and event monitoring
+     - Will use Windows API for process and memory inspection
+     - Will manage Windows-specific resources and event handling
+
+3. **Common Components**
+   - Shared scoring algorithms
+   - Logging and configuration systems
+   - Event handling infrastructure
+   - Detection logic common to all platforms
+
+### Build System
+
+The Makefile implements a flexible build system that supports multi-platform development:
+
+1. **Platform Detection and Selection**
+   - Automatically detects the host platform using `uname`
+   - Allows explicit platform selection via targets (`make linux` or `make windows`)
+   - Sets appropriate compiler flags and libraries for each platform
+   
+2. **Source Organization**
+   - Compiles the global entry point (main.c) for all platforms
+   - Includes platform-specific source files based on target platform
+   - Maintains separate object directories for clean builds
+   
+3. **Compilation Strategy**
+   - Uses conditional compilation to handle platform-specific code
+   - Separates platform-specific libraries and flags
+   - Supports both debug and release build configurations
+
+4. **Future Windows Integration**
+   - Maintains placeholders for Windows-specific source files
+   - Includes conditional compilation for Windows libraries
+   - Defines appropriate output extensions (.exe for Windows)
+
 ### Operational Modes
 
 - **Standalone Mode**: Direct execution with real-time feedback and interactive controls
@@ -107,129 +162,44 @@ The user_filter.c module implements several strategies for minimizing false posi
 - Memory monitoring via /proc/[pid]/maps
 - User activity filtering via /proc analysis and behavior patterns
 
-## Linux Monitoring Implementation
+### Future Windows Implementation
 
-### User Filter
+- API hooking for system call interception
+- File system minifilter for real-time file monitoring
+- Process monitoring via Windows Management Instrumentation (WMI)
+- Memory monitoring through ReadProcessMemory and VirtualQueryEx
+- ETW (Event Tracing for Windows) for additional event sources
+- User activity filtering via Windows API pattern recognition
 
-The Linux user filter system provides intelligent false positive reduction through:
+## Future Windows Integration Considerations
 
-1. **Process Whitelist Management**
-   - Maintains a database of trusted processes by executable path and name
-   - Assigns trust levels (0-100) to different applications
-   - Supports pattern matching for executable paths
-   - Controls whether child processes inherit whitelist status
+The Windows implementation will need to address several platform-specific challenges:
 
-2. **Process Signature Recognition**
-   - Captures known-good behavior patterns for specific applications
-   - Uses regex pattern matching for command-line verification
-   - Associates allowed behavior flags with specific applications
-   - Provides detailed descriptions for logging and reporting
+1. **API Hooking Strategy**
+   - Choosing between user-mode hooks (IAT/EAT) vs. kernel-mode hooks
+   - Managing hook persistence across process creation
+   - Handling privilege escalation attempts via API monitoring
 
-3. **Behavior Pattern Classification**
-   - Groups common system behaviors (backups, updates, compilation)
-   - Tracks frequency of observed patterns to improve accuracy
-   - Allows runtime whitelisting of recurring patterns
-   - Maintains history to improve detection accuracy over time
+2. **File System Monitoring**
+   - Implementing efficient file system change notifications
+   - Detecting ransomware patterns in NTFS operations
+   - Monitoring shadow copy deletion attempts
 
-4. **Score Adjustment Algorithm**
-   - Applies contextual trust modifiers to suspicion scores
-   - Factors in process origin, lifespan, and ownership
-   - Adjusts based on pattern matching and behavior recognition
-   - Preserves minimum score for non-excluded processes
+3. **Process Privileges**
+   - Managing administrator vs. standard user execution contexts
+   - Handling UAC elevation events
+   - Monitoring for token manipulation and privilege escalation
 
-### Syscall Monitoring
+4. **Windows-Specific Behavior Patterns**
+   - Registry modification patterns
+   - Windows service manipulation
+   - Task scheduler abuse
+   - Windows security feature bypasses
 
-The Linux implementation uses `ptrace` to hook into critical system calls that might indicate ransomware activity:
-
-| Syscall | Purpose | Monitoring Goal |
-|---------|---------|----------------|
-| execve | Process execution | Track new process creation, command parameters |
-| open/openat | File access | Monitor files being accessed, particularly sensitive documents |
-| read | File reading | Track which files are being read before modification |
-| write/pwrite64 | File writing | Detect content changes and potential encryption |
-| rename/renameat | File renaming | Detect extension changes (.doc → .encrypted) |
-| chmod/fchmod | Permission changes | Detect attempts to lock files by changing permissions |
-| unlink/unlinkat | File deletion | Identify deletion after encryption |
-| mkdir/mkdirat | Directory creation | Monitor for ransom note creation directories |
-| rmdir | Directory removal | Detect cleanup activities |
-
-### Detection Patterns
-
-The detection engine analyzes sequences of syscalls to identify ransomware behavior:
-
-1. **Read-Encrypt-Write Pattern**: Process reads file, processes content, writes back encrypted data
-2. **Mass Operation Pattern**: Rapid sequence of similar operations across many files
-3. **Extension Modification Pattern**: Systematic changing of file extensions
-4. **Entropy Increase Pattern**: File content becomes more random after write operations
-
-### Memory Monitoring
-
-Memory monitoring focuses on:
-
-1. Tracking memory regions through `/proc/<pid>/maps`
-2. Detecting new RWX (read-write-execute) memory regions
-3. Identifying memory regions with encryption code patterns
-4. Monitoring for code injection techniques
-5. Memory Change Detection: Tracking modifications to executable regions that might indicate self-modifying code
-6. Memory Checksum Verification: Sampling memory regions to detect unauthorized modifications
-7. Memory Usage Spikes: Detecting sudden large increases in memory usage that might indicate buffer preparation for encryption
-8. Suspicious Allocation Patterns: Identifying both numerous small allocations and large allocations that don't match normal application behavior
-
-### Memory Monitoring Events
-
-The memory monitor generates several types of events with varying impact scores:
-
-| Event Type | Description | Base Score | Score Multipliers |
-|------------|-------------|------------|-------------------|
-| RWX Region | New memory region with read-write-execute permissions | 10.0 | ×1.5 for anonymous mappings |
-| Modified Code | Changes to executable memory regions | 15.0 | ×1.7 for anonymous mappings |
-| Memory Spike | Sudden increase in process memory usage | 2.0-10.0 | Based on size and speed of increase |
-| Allocation Pattern | Suspicious memory allocation patterns | 5.0-8.0 | Based on pattern type and quantity |
-
-### Process Monitoring
-
-Process monitoring checks for suspicious patterns in:
-
-1. **Process Location**: Detection of executables running from unusual locations such as /tmp, /dev/shm, or non-standard directories in user's home
-2. **Process Names**: Identification of suspicious or obfuscated process names, including randomized names or those containing keywords related to ransomware
-3. **Command Lines**: Analysis of command-line arguments for suspicious parameters, encoded content, or known malicious patterns
-4. **Privilege Escalation**: Detection of processes that change their effective user ID or gain elevated privileges
-5. **File Access Rates**: Monitoring the rate at which processes access files, flagging abnormally high rates that could indicate mass encryption
-6. **Process Spawning**: Tracking parent-child relationships and identifying abnormal patterns of process creation
-
-### Process Monitoring Events
-
-The process monitor generates these event types:
-
-| Event Type | Description | Base Score | Score Multipliers |
-|------------|-------------|------------|-------------------|
-| Process Suspicious | Process with multiple suspicious indicators | 20.0 | Based on number of suspicious factors |
-| Process Behavior | Abnormal behavioral pattern detected | 10.0-15.0 | Based on severity of behavior |
-| Process PrivEsc | Privilege escalation detected | 25.0 | Higher for critical system processes |
-
-### Process Hierarchy Analysis
-
-Process monitoring tracks:
-
-1. Parent-child relationships between processes
-2. Command-line arguments of suspicious processes
-3. Short-lived processes performing file operations
-4. Unexpected process creation chains
-
-### Linux-Specific Scoring Adjustments
-
-| Behavior | Base Score | Multiplier Conditions |
-|----------|------------|----------------------|
-| Sequential file operations | 5 | ×2 if >10 files/second, ×3 if >50 files/second |
-| Extension changes | 15 | ×2 if known ransomware extensions (.locked, .encrypted) |
-| RWX memory allocations | 10 | ×2 if in non-developer processes |
-| Process spawning shell | 8 | ×2 if shell spawns further processes accessing files |
-| High file entropy after write | 20 | ×1.5 if multiple files show entropy increases |
-| Modified executable memory | 15 | ×2 if process is accessing sensitive files |
-| Process from tmp directory | 15 | ×1.5 if also showing suspicious behavior |
-| Process with suspicious name | 10 | ×2 if multiple suspicious indicators present |
-| Rapid file access | 15 | Scaled with access rate (higher = more suspicious) |
-| Rapid process spawning | 10 | Scaled with spawn rate |
+5. **Integration with Windows Security Features**
+   - Controlled Folder Access coordination
+   - Windows Defender integration
+   - SmartScreen and other reputation systems
 
 ## Component Dependencies
 
@@ -247,14 +217,7 @@ Process monitoring tracks:
   - memory_monitor.c: Coordinates with user_filter for behavior pattern validation
   - process_monitor.c: Consults user_filter for process legitimacy evaluation
 
-## Future Optimizations
-
-### User Filter Optimizations
-- Implement caching of process verification results
-- Add machine learning capabilities to improve pattern recognition
-- Provide user feedback mechanism to report false positives
-- Develop automatic signature generation for common applications
-- Create centralized reputation database for processes and behaviors
+## Future Improvements
 
 ### Build System Enhancements
 - Support for CMake as an alternative build system

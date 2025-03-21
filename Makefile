@@ -14,20 +14,47 @@ else
     CFLAGS += -O2 -DNDEBUG
 endif
 
+# Platform detection
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+    PLATFORM = linux
+    PLATFORM_CFLAGS = 
+    PLATFORM_LDFLAGS = -lpthread -lrt
+endif
+ifeq ($(UNAME_S),Darwin)
+    PLATFORM = macos
+    PLATFORM_CFLAGS = 
+    PLATFORM_LDFLAGS = 
+endif
+ifneq (,$(findstring MINGW,$(UNAME_S)))
+    PLATFORM = windows
+    PLATFORM_CFLAGS = -D_WIN32_WINNT=0x0600
+    PLATFORM_LDFLAGS = -lpsapi -lws2_32
+endif
+
 # Directories
 SRC_DIR = .
 INCLUDE_DIR = ./include
 COMMON_DIR = ./common
 LINUX_DIR = ./linux
-WINDOWS_DIR = ./windows  # For future use
+WINDOWS_DIR = ./windows
 BUILD_DIR = ./build
 BIN_DIR = ./bin
 
 # Output binary
-LINUX_TARGET = $(BIN_DIR)/antiransom-linux
-WINDOWS_TARGET = $(BIN_DIR)/antiransom-win.exe  # For future use
+TARGET = $(BIN_DIR)/antiransom
+ifeq ($(PLATFORM),windows)
+    TARGET = $(BIN_DIR)/antiransom.exe
+endif
 
-# Linux source files
+# Common source files
+COMMON_SOURCES = \
+    $(SRC_DIR)/main.c \
+    $(COMMON_DIR)/logger.c \
+    $(COMMON_DIR)/config.c \
+    $(COMMON_DIR)/scoring.c
+
+# Platform-specific source files
 LINUX_SOURCES = \
     $(LINUX_DIR)/main.c \
     $(LINUX_DIR)/detection.c \
@@ -36,13 +63,6 @@ LINUX_SOURCES = \
     $(LINUX_DIR)/process_monitor.c \
     $(LINUX_DIR)/user_filter.c
 
-# Common source files
-COMMON_SOURCES = \
-    $(COMMON_DIR)/logger.c \
-    $(COMMON_DIR)/config.c \
-    $(COMMON_DIR)/scoring.c
-
-# Windows source files (for future use)
 WINDOWS_SOURCES = \
     $(WINDOWS_DIR)/main.c \
     $(WINDOWS_DIR)/detection.c \
@@ -51,45 +71,51 @@ WINDOWS_SOURCES = \
     $(WINDOWS_DIR)/process_monitor.c \
     $(WINDOWS_DIR)/user_filter.c
 
-# All Linux objects
-LINUX_OBJECTS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(LINUX_SOURCES) $(COMMON_SOURCES))
+# Select sources based on platform
+ifeq ($(PLATFORM),linux)
+    PLATFORM_SOURCES = $(LINUX_SOURCES)
+else ifeq ($(PLATFORM),windows)
+    PLATFORM_SOURCES = $(WINDOWS_SOURCES)
+else
+    # Default to Linux if we can't detect platform
+    PLATFORM_SOURCES = $(LINUX_SOURCES)
+endif
 
-# All Windows objects (for future use)
-WINDOWS_OBJECTS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(WINDOWS_SOURCES) $(COMMON_SOURCES))
+# All objects
+COMMON_OBJECTS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(COMMON_SOURCES))
+PLATFORM_OBJECTS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(PLATFORM_SOURCES))
+ALL_OBJECTS = $(COMMON_OBJECTS) $(PLATFORM_OBJECTS)
 
 # Default target
-all: linux
-
-# Linux target
-linux: dirs $(LINUX_TARGET)
-
-# Windows target (commented out for now)
-# windows: dirs $(WINDOWS_TARGET)
+all: dirs $(TARGET)
 
 # Create necessary directories
 dirs:
-    @mkdir -p $(BUILD_DIR)/$(LINUX_DIR)
     @mkdir -p $(BUILD_DIR)/$(COMMON_DIR)
+    @mkdir -p $(BUILD_DIR)/$(LINUX_DIR)
+    @mkdir -p $(BUILD_DIR)/$(WINDOWS_DIR)
     @mkdir -p $(BIN_DIR)
-    # @mkdir -p $(BUILD_DIR)/$(WINDOWS_DIR)
 
-# Linux build
-$(LINUX_TARGET): $(LINUX_OBJECTS)
-    $(CC) -o $@ $^ $(LDFLAGS)
-
-# Windows build (commented out for now)
-# $(WINDOWS_TARGET): $(WINDOWS_OBJECTS)
-# 	$(CC) -o $@ $^ $(WINDOWS_LDFLAGS)
+# Build the target
+$(TARGET): $(ALL_OBJECTS)
+    $(CC) -o $@ $^ $(LDFLAGS) $(PLATFORM_LDFLAGS)
 
 # Generic rule for object files
 $(BUILD_DIR)/%.o: %.c
     @mkdir -p $(dir $@)
-    $(CC) $(CFLAGS) -I$(INCLUDE_DIR) -c $< -o $@
+    $(CC) $(CFLAGS) $(PLATFORM_CFLAGS) -I$(INCLUDE_DIR) -c $< -o $@
 
-# Install the Linux binary
-install: linux
+# Platform-specific targets
+linux:
+    $(MAKE) PLATFORM=linux
+
+windows:
+    $(MAKE) PLATFORM=windows
+
+# Install the binary
+install: $(TARGET)
     @mkdir -p /usr/local/bin
-    cp $(LINUX_TARGET) /usr/local/bin/antiransom
+    cp $(TARGET) /usr/local/bin/antiransom
     @echo "Installed to /usr/local/bin/antiransom"
 
 # Clean build artifacts
@@ -98,12 +124,15 @@ clean:
 
 # Show available targets
 help:
+    @echo "AntiRansom Makefile"
+    @echo ""
     @echo "Available targets:"
-    @echo "  all (default) - Build Linux version"
-    @echo "  linux         - Build Linux version"
-    @echo "  install       - Install Linux binary to /usr/local/bin"
-    @echo "  clean         - Remove build artifacts"
-    @echo "  help          - Show this help message"
+    @echo "  all       - Build for detected platform ($(PLATFORM))"
+    @echo "  linux     - Build for Linux platform"
+    @echo "  windows   - Build for Windows platform"
+    @echo "  install   - Install binary to /usr/local/bin (Linux only)"
+    @echo "  clean     - Remove build artifacts"
+    @echo "  help      - Show this help message"
     @echo ""
     @echo "Options:"
     @echo "  BUILD_TYPE=debug|release (default: debug)"
