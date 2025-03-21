@@ -119,4 +119,15 @@ typedef struct {
     LogSettings log_settings;
 } Configuration;
 
+// Add this structure definition:
+typedef struct {
+    unsigned long total_memory_kb;
+    int rwx_region_count;
+    int memory_region_count;
+    int has_new_rwx_region;
+    int has_modified_executable_region;
+    int has_large_memory_increase;
+    int has_suspicious_allocation_pattern;
+} MemoryStats;
+
 #endif /* ANTIRANSOM_H */

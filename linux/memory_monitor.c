@@ -101,14 +101,14 @@ int memory_monitor_init(EventHandler handler, void* user_data) {
     event_callback = handler;
     event_callback_data = user_data;
     
-    LOG_INFO("Memory monitor initialized");
+    LOG_INFO("Memory monitor initialized%s", "");
     return 0;
 }
 
 // Clean up resources
 void memory_monitor_cleanup(void) {
     process_count = 0;
-    LOG_INFO("Memory monitor cleaned up");
+    LOG_INFO("Memory monitor cleaned up%s", "");
 }
 
 // Start monitoring a process
@@ -580,7 +580,7 @@ static ProcessMemory* find_process_memory(pid_t pid) {
 // Add a new process to monitor
 static ProcessMemory* add_process_memory(pid_t pid) {
     if (process_count >= MAX_MONITORED_PROCESSES) {
-        LOG_ERROR("Cannot monitor more processes, limit reached");
+        LOG_ERROR("Cannot monitor more processes, limit reached%s", "");
         return NULL;
     }
     

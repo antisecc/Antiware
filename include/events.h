@@ -23,10 +23,18 @@ typedef enum {
     EVENT_CRYPTO_API,         // Cryptographic API usage
     EVENT_BACKUP_ACCESS,      // Backup/shadow copy access
     
-    // Add missing event types (maintaining the pattern)
+    // Additional process-related events
     EVENT_PROCESS_SUSPICIOUS, // Suspicious process behavior
     EVENT_PROCESS_BEHAVIOR,   // General process behavior
     EVENT_PROCESS_PRIVESC,    // Privilege escalation attempts
+    
+    // Additional memory-related events
+    EVENT_MEMORY_RWX,         // Executable and writable memory detected
+    EVENT_MEMORY_PATTERN,     // Suspicious memory allocation pattern
+    EVENT_MEMORY_USAGE,       // Unusual memory usage
+    EVENT_MEMORY_MODIFIED,    // Modification of executable memory
+    
+    // Alert events
     EVENT_DETECTION_ALERT     // Security detection alerts
 } EventType;
 
