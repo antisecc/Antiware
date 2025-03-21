@@ -27,9 +27,9 @@
 // Maximum number of behavior patterns
 #define MAX_BEHAVIOR_PATTERNS 64
 
-// Maximum path length
+// Maximum path length and command line
 #define MAX_PATH_LENGTH 1024
-
+#define MAX_CMDLINE_LENGTH 4096
 // Process whitelist entry
 typedef struct {
     char process_name[256];
