@@ -4,40 +4,38 @@
 #include <stdarg.h>
 #include "../include/antiransom.h"
 
-/* Log levels */
 typedef enum {
-    LOG_FATAL,   // Critical errors that cause program termination
-    LOG_ERROR,   // Error conditions
-    LOG_WARNING, // Warning conditions
-    LOG_INFO,    // Informational messages
-    LOG_DEBUG,   // Debug-level messages
-    LOG_TRACE    // Detailed tracing information
+    LOG_LEVEL_DEBUG = 0,
+    LOG_LEVEL_INFO,
+    LOG_LEVEL_WARNING,
+    LOG_LEVEL_ERROR,
+    LOG_LEVEL_FATAL
 } LogLevel;
 
-/* Initialize the logger */
-void logger_init(bool console_output, const char* log_file);
+typedef enum {
+    LOG_TO_STDOUT = 0,
+    LOG_TO_FILE,
+    LOG_TO_SYSLOG
+} LogDestination;
 
-/* Close the logger and free resources */
-void logger_close(void);
+// Initialize the logger
+int logger_init(LogDestination destination, LogLevel level);
 
-/* Set the minimum log level to display */
-void logger_set_level(LogLevel level);
+// Close the logger
+void logger_cleanup(void);
 
-/* Log a message with the specified level */
-void logger_log(LogLevel level, const char* file, int line, const char* fmt, ...);
+// Log functions
+void log_debug(const char* file, int line, const char* format, ...);
+void log_info(const char* file, int line, const char* format, ...);
+void log_warning(const char* file, int line, const char* format, ...);
+void log_error(const char* file, int line, const char* format, ...);
+void log_fatal(const char* file, int line, const char* format, ...);
 
-/* Log detection events */
-void logger_detection(const DetectionContext* context, const char* reason);
+// Convenient macros
+#define LOG_DEBUG(format, ...) log_debug(__FILE__, __LINE__, format, ##__VA_ARGS__)
+#define LOG_INFO(format, ...) log_info(__FILE__, __LINE__, format, ##__VA_ARGS__)
+#define LOG_WARNING(format, ...) log_warning(__FILE__, __LINE__, format, ##__VA_ARGS__)
+#define LOG_ERROR(format, ...) log_error(__FILE__, __LINE__, format, ##__VA_ARGS__)
+#define LOG_FATAL(format, ...) log_fatal(__FILE__, __LINE__, format, ##__VA_ARGS__)
 
-/* Log action taken */
-void logger_action(ResponseAction action, uint32_t process_id, const char* process_name);
-
-/* Helper macros */
-#define LOG_FATAL(...)   logger_log(LOG_FATAL, __FILE__, __LINE__, __VA_ARGS__)
-#define LOG_ERROR(...)   logger_log(LOG_ERROR, __FILE__, __LINE__, __VA_ARGS__)
-#define LOG_WARNING(...) logger_log(LOG_WARNING, __FILE__, __LINE__, __VA_ARGS__)
-#define LOG_INFO(...)    logger_log(LOG_INFO, __FILE__, __LINE__, __VA_ARGS__)
-#define LOG_DEBUG(...)   logger_log(LOG_DEBUG, __FILE__, __LINE__, __VA_ARGS__)
-#define LOG_TRACE(...)   logger_log(LOG_TRACE, __FILE__, __LINE__, __VA_ARGS__)
-
-#endif /* LOGGER_H */
+#endif // LOGGER_H
