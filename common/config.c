@@ -79,7 +79,7 @@ void config_init(Configuration* config) {
     // Set default values
     set_default_values(config);
     
-    LOG_INFO("Configuration initialized with default values");
+    LOG_INFO("Configuration initialized with default values%s", "");
 }
 
 // Helper to trim whitespace from strings
@@ -499,7 +499,7 @@ void config_set_scan_interval(Configuration* config, uint32_t interval_ms) {
     // Validate minimum interval to prevent excessive CPU usage
     if (interval_ms < 100) {
         interval_ms = 100;
-        LOG_WARNING("Specified scan interval too small, setting to minimum (100ms)");
+        LOG_WARNING("Specified scan interval too small, setting to minimum (100ms)%s", "");
     }
     
     config->scan_interval_ms = interval_ms;
