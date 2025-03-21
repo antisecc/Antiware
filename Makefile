@@ -98,7 +98,7 @@ dirs:
 
 # Build the target
 $(TARGET): $(ALL_OBJECTS)
-    $(CC) -o $@ $^ $(LDFLAGS) $(PLATFORM_LDFLAGS)
+    $(CC) -o $@ $^ $(LDFLAGS) $(PLATFORM_LDFLAGS) -lm
 
 # Generic rule for object files
 $(BUILD_DIR)/%.o: %.c

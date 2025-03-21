@@ -469,3 +469,41 @@ int detection_get_suspicious_processes(DetectionContext **contexts, size_t max_c
     
     return count;
 }
+
+// Implement these functions:
+
+void detection_poll(void) {
+    // Poll each monitor
+    process_monitor_poll();
+    memory_monitor_poll();
+    
+    // Update detection status
+    update_detection_status();
+}
+
+void detection_handle_event(const Event* event) {
+    if (!event) {
+        return;
+    }
+    
+    // Process event based on type
+    detection_process_event(event);
+    
+    // Update threat score
+    update_threat_score(event);
+}
+
+int detection_add_process(pid_t pid) {
+    // Add process to monitoring
+    int result = process_monitor_add_process(pid);
+    if (result == 0) {
+        result = memory_monitor_add_process(pid);
+    }
+    return result;
+}
+
+void detection_remove_process(pid_t pid) {
+    // Remove process from monitoring
+    process_monitor_remove_process(pid);
+    memory_monitor_remove_process(pid);
+}
