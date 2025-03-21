@@ -98,7 +98,7 @@ dirs:
 
 # Build the target
 $(TARGET): $(ALL_OBJECTS)
-	$(CC) -o $(BIN_DIR)/$(TARGET) $(OBJECTS) -lpthread -lrt -lpthread -lrt -lm
+	$(CC) -o $@ $(ALL_OBJECTS) $(LDFLAGS) -lm
 
 # Generic rule for object files
 $(BUILD_DIR)/%.o: %.c
