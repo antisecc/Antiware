@@ -354,7 +354,7 @@ static void event_callback(const Event* event, void* user_data) {
                          event->data.process_event.parent_pid, event->data.process_event.image_path);
                 break;
                 
-            case EVENT_PROCESS_EXIT:
+            case EVENT_PROCESS_TERMINATE:
                 LOG_DEBUG("[%s] Process %d exited", timestamp, event->process_id);
                 break;
                 

@@ -21,7 +21,13 @@ typedef enum {
     EVENT_REGISTRY_ACCESS,    // Registry access (Windows)
     EVENT_REGISTRY_MODIFY,    // Registry modification (Windows)
     EVENT_CRYPTO_API,         // Cryptographic API usage
-    EVENT_BACKUP_ACCESS       // Backup/shadow copy access
+    EVENT_BACKUP_ACCESS,      // Backup/shadow copy access
+    
+    // Add missing event types
+    EVENT_PROCESS_SUSPICIOUS, // Suspicious process behavior
+    EVENT_PROCESS_BEHAVIOR,   // General process behavior
+    EVENT_PROCESS_PRIVESC,    // Privilege escalation attempts
+    EVENT_DETECTION_ALERT     // Security detection alerts
 } EventType;
 
 /* Generic event structure */
@@ -43,33 +49,48 @@ typedef struct {
             uint32_t parent_pid;
             char image_path[512];
             char command_line[1024];
+            char details[256];       // Add details field for extended info
         } process_event;
         
+        // Add missing structure for memory events
         struct {
-            void* address;
+            uintptr_t address;
             size_t size;
             uint32_t protection_flags;
+            char details[256];       // For detailed memory event info
         } memory_event;
         
+        // Add missing structure for network events
         struct {
-            char remote_address[64];
+            char remote_address[128];
             uint16_t remote_port;
-            bool encrypted;
+            uint16_t local_port;
+            uint8_t protocol;
+            uint8_t encrypted;
         } network_event;
         
+        // Add missing structure for registry events
         struct {
             char key_path[512];
-            bool is_write;
+            char value_name[128];
+            uint32_t value_type;
         } registry_event;
         
+        // Add missing structure for crypto events
         struct {
-            char api_name[128];
-            bool is_symmetric;
+            char api_name[64];
+            uint32_t flags;
         } crypto_event;
+        
+        // Add missing structure for detection events
+        struct {
+            uint32_t severity;
+            float score;
+            char message[512];
+        } detection_event;
     } data;
 } Event;
 
-/* Callback function definition for event handling */
 typedef void (*EventHandler)(const Event* event, void* user_data);
 
-#endif /* EVENTS_H */
+#endif
