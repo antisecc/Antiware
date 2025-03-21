@@ -23,7 +23,7 @@ typedef enum {
     EVENT_CRYPTO_API,         // Cryptographic API usage
     EVENT_BACKUP_ACCESS,      // Backup/shadow copy access
     
-    // Add missing event types
+    // Add missing event types (maintaining the pattern)
     EVENT_PROCESS_SUSPICIOUS, // Suspicious process behavior
     EVENT_PROCESS_BEHAVIOR,   // General process behavior
     EVENT_PROCESS_PRIVESC,    // Privilege escalation attempts
@@ -49,10 +49,9 @@ typedef struct {
             uint32_t parent_pid;
             char image_path[512];
             char command_line[1024];
-            char details[256];       // Add details field for extended info
+            char details[256];       // Add details field for process events
         } process_event;
         
-        // Add missing structure for memory events
         struct {
             uintptr_t address;
             size_t size;
@@ -60,7 +59,6 @@ typedef struct {
             char details[256];       // For detailed memory event info
         } memory_event;
         
-        // Add missing structure for network events
         struct {
             char remote_address[128];
             uint16_t remote_port;
@@ -69,20 +67,18 @@ typedef struct {
             uint8_t encrypted;
         } network_event;
         
-        // Add missing structure for registry events
         struct {
             char key_path[512];
             char value_name[128];
             uint32_t value_type;
         } registry_event;
         
-        // Add missing structure for crypto events
         struct {
             char api_name[64];
             uint32_t flags;
         } crypto_event;
         
-        // Add missing structure for detection events
+        // Add detection_event structure
         struct {
             uint32_t severity;
             float score;
@@ -91,6 +87,7 @@ typedef struct {
     } data;
 } Event;
 
+// Define event handler function pointer type
 typedef void (*EventHandler)(const Event* event, void* user_data);
 
-#endif
+#endif // EVENTS_H
