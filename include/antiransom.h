@@ -59,8 +59,49 @@ typedef struct {
     void* platform_specific; // OS-specific data
 } DetectionContext;
 
+/**
+ * Detection thresholds
+ */
+typedef struct {
+    float low;        // Low suspicion threshold (matches threshold_low)
+    float medium;     // Medium suspicion threshold (matches threshold_medium)
+    float high;       // High suspicion threshold (matches threshold_high)
+    float critical;   // Critical suspicion threshold (matches threshold_critical)
+} DetectionThresholds;
+
+/**
+ * Monitoring settings
+ */
+typedef struct {
+    bool monitor_file_ops;          // Monitor file operations
+    bool monitor_process_creation;  // Monitor process creation
+    bool monitor_network;           // Monitor network connections
+    bool monitor_registry;          // Monitor registry changes (Windows)
+    bool monitor_memory;            // Monitor memory for suspicious patterns
+} MonitorSettings;
+
+/**
+ * Response settings
+ */
+typedef struct {
+    bool notify_user;               // Show notifications to user
+    bool block_suspicious;          // Block suspicious activities
+    bool create_backups;            // Create backups before response actions
+} ResponseSettings;
+
+/**
+ * Logging settings
+ */
+typedef struct {
+    int log_level;                  // Minimum log level to record
+    char log_file[256];             // Path to log file
+    bool log_to_console;            // Log to console
+    bool log_to_file;               // Log to file
+} LogSettings;
+
 /* Configuration options */
 typedef struct {
+    // Original fields (for backward compatibility)
     OperationMode mode;
     bool verbose_logging;
     uint32_t scan_interval_ms;
@@ -70,6 +111,12 @@ typedef struct {
     float threshold_critical;
     bool auto_respond;
     char whitelist_path[512];
+    
+    // Enhanced configuration structure
+    DetectionThresholds thresholds;  // Structured thresholds
+    MonitorSettings monitor_settings;
+    ResponseSettings response_settings;
+    LogSettings log_settings;
 } Configuration;
 
 #endif /* ANTIRANSOM_H */

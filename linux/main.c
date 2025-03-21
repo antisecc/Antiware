@@ -497,9 +497,9 @@ static void initialize_logging(void) {
     
     if (daemon_mode) {
         // In daemon mode, log to syslog
-        log_init(LOG_TO_SYSLOG, level);
+        logger_init(LOG_TO_SYSLOG, level);
     } else {
         // In console mode, log to stdout
-        log_init(LOG_TO_STDOUT, level);
+        logger_init(LOG_TO_STDOUT, level);
     }
 }
