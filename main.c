@@ -103,7 +103,7 @@ int main(int argc, char* argv[]) {
     
     // Dispatch to platform-specific implementation
 #ifdef PLATFORM_LINUX
-    LOG_INFO("Detected Linux platform");
+    LOG_INFO("Detected Linux platform%s", "");
     return linux_main(argc, argv);
 #elif defined(PLATFORM_WINDOWS)
     LOG_INFO("Detected Windows platform");
