@@ -29,10 +29,10 @@ void log_error(const char* file, int line, const char* format, ...);
 void log_fatal(const char* file, int line, const char* format, ...);
 
 // Convenient macros
-#define LOG_DEBUG(format, ...) log_debug(__FILE__, __LINE__, format, ##__VA_ARGS__)
-#define LOG_INFO(format, ...) log_info(__FILE__, __LINE__, format, ##__VA_ARGS__)
-#define LOG_WARNING(format, ...) log_warning(__FILE__, __LINE__, format, ##__VA_ARGS__)
-#define LOG_ERROR(format, ...) log_error(__FILE__, __LINE__, format, ##__VA_ARGS__)
-#define LOG_FATAL(format, ...) log_fatal(__FILE__, __LINE__, format, ##__VA_ARGS__)
+#define LOG_DEBUG(format, ...) log_debug(__FILE__, __LINE__, format "%s", ##__VA_ARGS__, "")
+#define LOG_INFO(format, ...) log_info(__FILE__, __LINE__, format "%s", ##__VA_ARGS__, "")
+#define LOG_WARNING(format, ...) log_warning(__FILE__, __LINE__, format "%s", ##__VA_ARGS__, "")
+#define LOG_ERROR(format, ...) log_error(__FILE__, __LINE__, format "%s", ##__VA_ARGS__, "")
+#define LOG_FATAL(format, ...) log_fatal(__FILE__, __LINE__, format "%s", ##__VA_ARGS__, "")
 
 #endif // LOGGER_H

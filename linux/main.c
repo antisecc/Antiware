@@ -9,6 +9,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <pwd.h>
 #include <time.h>
 
@@ -53,7 +54,7 @@ extern void detection_poll(void);
 static int running = 0;
 static int daemon_mode = 0;
 static int verbose_mode = 0;
-static Config config;
+static Configuration config;
 static pthread_mutex_t poll_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t poll_thread;
 
@@ -179,9 +180,9 @@ static void parse_arguments(int argc, char* argv[]) {
     memset(&config, 0, sizeof(config));
     
     // Set default config values
-    config.detection_threshold = 50;
-    config.alert_threshold = 70;
-    config.prevention_threshold = 90;
+    config.threshold_low = 50;
+    config.threshold_medium = 70;
+    config.threshold_high = 90;
     
     // Override with values from config file if exists
     config_load(&config, config_path);
@@ -311,7 +312,7 @@ static void event_callback(const Event* event, void* user_data) {
     
     // For process events that indicate a new process, add to monitoring
     if (event->type == EVENT_PROCESS_CREATE) {
-        pid_t child_pid = event->data.process_event.child_pid;
+        pid_t child_pid = event->data.process_event.parent_pid;
         
         // Add to detection and memory monitoring
         detection_add_process(child_pid);
@@ -319,7 +320,7 @@ static void event_callback(const Event* event, void* user_data) {
     }
     
     // For process exit events, remove from monitoring
-    if (event->type == EVENT_PROCESS_EXIT) {
+    if (event->type == EVENT_PROCESS_TERMINATE) {
         detection_remove_process(event->process_id);
     }
     
@@ -336,7 +337,7 @@ static void event_callback(const Event* event, void* user_data) {
                          timestamp, event->process_id, event->data.file_event.path);
                 break;
                 
-            case EVENT_FILE_WRITE:
+            case EVENT_FILE_MODIFY:
                 LOG_DEBUG("[%s] Process %d wrote to file: %s", 
                          timestamp, event->process_id, event->data.file_event.path);
                 break;
@@ -344,25 +345,24 @@ static void event_callback(const Event* event, void* user_data) {
             case EVENT_FILE_RENAME:
                 LOG_DEBUG("[%s] Process %d renamed file: %s -> %s", 
                          timestamp, event->process_id, 
-                         event->data.file_event.path, event->data.file_event.new_path);
+                         event->data.file_event.path, "N/A");
                 break;
                 
             case EVENT_PROCESS_CREATE:
                 LOG_DEBUG("[%s] Process %d created child process: %d (%s)", 
                          timestamp, event->process_id, 
-                         event->data.process_event.child_pid, event->data.process_event.comm);
+                         event->data.process_event.parent_pid, event->data.process_event.image_path);
                 break;
                 
             case EVENT_PROCESS_EXIT:
                 LOG_DEBUG("[%s] Process %d exited", timestamp, event->process_id);
                 break;
                 
-            case EVENT_MEMORY_RWX:
-            case EVENT_MEMORY_MODIFIED:
-            case EVENT_MEMORY_USAGE:
-            case EVENT_MEMORY_PATTERN:
+            case EVENT_MEMORY_ALLOC:
+            case EVENT_MEMORY_FREE:
+            case EVENT_MEMORY_PROTECT:
                 LOG_DEBUG("[%s] Memory event in process %d: %s", 
-                         timestamp, event->process_id, event->data.memory_event.details);
+                         timestamp, event->process_id, "memory operation");
                 break;
                 
             case EVENT_PROCESS_SUSPICIOUS:
