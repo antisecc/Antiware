@@ -57,7 +57,7 @@ extern void process_monitor_remove_process(pid_t pid);
 
 extern int memory_monitor_poll(void);
 extern int memory_monitor_add_process(pid_t pid);
-
+extern Configuration* config_get_current(void);
 // Forward declarations for user filter functions
 extern float user_filter_adjust_score(pid_t pid, float original_score, const BehaviorFlags* behavior);
 extern int user_filter_is_whitelisted(pid_t pid, const char* process_name, const char* path);
@@ -603,7 +603,7 @@ void detection_handle_event(const Event* event) {
         event->type == EVENT_FILE_MODIFY) {
         behavior.rapid_file_access = 1;
     } else if (event->type == EVENT_PROCESS_CREATE) {
-        behavior.rapid_process_spawning = 1;
+        behavior.high_process_activity = 1;  // Use existing field instead of rapid_process_spawning
     }
     
     float score_adjustment = user_filter_adjust_score(

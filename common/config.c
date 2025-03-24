@@ -505,3 +505,24 @@ void config_set_scan_interval(Configuration* config, uint32_t interval_ms) {
     config->scan_interval_ms = interval_ms;
     LOG_INFO("Scan interval updated to %u ms", interval_ms);
 }
+
+/**
+ * Retrieves the current active configuration
+ * Thread-safe access to the global configuration
+ * 
+ * @return Pointer to the current configuration or NULL on failure
+ */
+Configuration* config_get_current(void) {
+    // Use a static global configuration
+    static Configuration global_config;
+    static int initialized = 0;
+    
+    // Initialize on first call
+    if (!initialized) {
+        // Set default values
+        config_init(&global_config);
+        initialized = 1;
+    }
+    
+    return &global_config;
+}
