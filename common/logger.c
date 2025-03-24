@@ -233,13 +233,14 @@ void log_fatal(const char* file, int line, const char* format, ...) {
  * Used for recording actual security detections
  */
 void logger_detection(const char* format, ...) {
-    char message[1024];
+    // Format the original message
+    char message[900]; // Reduced size to allow for prefix
     va_list args;
     va_start(args, format);
     vsnprintf(message, sizeof(message), format, args);
     va_end(args);
     
-    // Create the formatted detection message
+    // Create the formatted detection message - already includes space for prefix
     char detection_message[1024];
     snprintf(detection_message, sizeof(detection_message), "[DETECTION] %s", message);
     
@@ -260,13 +261,14 @@ void logger_detection(const char* format, ...) {
  * Used for recording interventions and mitigations
  */
 void logger_action(const char* format, ...) {
-    char message[1024];
+    // Format the original message
+    char message[900]; // Reduced size to allow for prefix
     va_list args;
     va_start(args, format);
     vsnprintf(message, sizeof(message), format, args);
     va_end(args);
     
-    // Create the formatted action message
+    // Create the formatted action message - already includes space for prefix
     char action_message[1024];
     snprintf(action_message, sizeof(action_message), "[ACTION] %s", message);
     

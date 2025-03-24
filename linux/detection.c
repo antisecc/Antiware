@@ -49,6 +49,92 @@ static void update_detection_score(ProcessMonitor *monitor);
 extern void logger_detection(const DetectionContext *context, const char *message);
 extern void logger_action(ResponseAction action, pid_t pid, const char *process_name);
 
+// Forward declarations for monitor interfaces
+extern void process_monitor_poll(void);
+extern void memory_monitor_remove_process(pid_t pid);
+extern int process_monitor_add_process(pid_t pid);
+extern void process_monitor_remove_process(pid_t pid);
+
+extern int memory_monitor_poll(void);
+extern int memory_monitor_add_process(pid_t pid);
+
+// Forward declarations for user filter functions
+extern float user_filter_adjust_score(pid_t pid, float original_score, const BehaviorFlags* behavior);
+extern int user_filter_is_whitelisted(pid_t pid, const char* process_name, const char* path);
+
+// Forward declarations for context management
+static void update_detection_status(void);
+static void check_threat_thresholds(pid_t pid);
+static DetectionContext* get_detection_context(pid_t pid);
+static void add_detection_context(pid_t pid, DetectionContext* context);
+static void remove_detection_context(pid_t pid);
+
+// Process helpers
+void get_process_name_from_pid(pid_t pid, char* buffer, size_t buffer_size);
+void get_process_path_from_pid(pid_t pid, char* buffer, size_t buffer_size);
+
+// Hash table for detection contexts (simple implementation)
+#define MAX_DETECTION_CONTEXTS 1024
+static struct {
+    pid_t pid;
+    DetectionContext* context;
+    int used;
+} detection_contexts[MAX_DETECTION_CONTEXTS];
+
+static void init_detection_contexts(void) {
+    static int initialized = 0;
+    if (!initialized) {
+        memset(detection_contexts, 0, sizeof(detection_contexts));
+        initialized = 1;
+    }
+}
+
+static DetectionContext* get_detection_context(pid_t pid) {
+    init_detection_contexts();
+    
+    // Simple linear search (could be improved with hash table)
+    for (int i = 0; i < MAX_DETECTION_CONTEXTS; i++) {
+        if (detection_contexts[i].used && detection_contexts[i].pid == pid) {
+            return detection_contexts[i].context;
+        }
+    }
+    
+    return NULL;
+}
+
+static void add_detection_context(pid_t pid, DetectionContext* context) {
+    init_detection_contexts();
+    
+    // Find an empty slot
+    for (int i = 0; i < MAX_DETECTION_CONTEXTS; i++) {
+        if (!detection_contexts[i].used) {
+            detection_contexts[i].pid = pid;
+            detection_contexts[i].context = context;
+            detection_contexts[i].used = 1;
+            return;
+        }
+    }
+    
+    // If no empty slot, overwrite the first entry (not ideal but prevents leaks)
+    LOG_WARNING("Detection context table full, overwriting first entry%s", "");
+    detection_contexts[0].pid = pid;
+    detection_contexts[0].context = context;
+    detection_contexts[0].used = 1;
+}
+
+static void remove_detection_context(pid_t pid) {
+    init_detection_contexts();
+    
+    for (int i = 0; i < MAX_DETECTION_CONTEXTS; i++) {
+        if (detection_contexts[i].used && detection_contexts[i].pid == pid) {
+            detection_contexts[i].used = 0;
+            detection_contexts[i].pid = 0;
+            detection_contexts[i].context = NULL;
+            return;
+        }
+    }
+}
+
 // Initialize the detection system
 int detection_init(void) {
     monitored_processes = malloc(MAX_MONITORED_PROCESSES * sizeof(ProcessMonitor));
@@ -502,11 +588,28 @@ void detection_handle_event(const Event* event) {
         return;
     }
     
+    // Get configuration
+    Configuration* config = config_get_current();
+    if (!config) {
+        LOG_ERROR("Failed to get configuration for event handling%s", "");
+        return;
+    }
+    
     // First, check if the process is whitelisted
+    BehaviorFlags behavior = {0}; // Initialize empty behavior flags
+    
+    // Extract behavior from event if possible
+    if (event->type == EVENT_FILE_ACCESS || 
+        event->type == EVENT_FILE_MODIFY) {
+        behavior.rapid_file_access = 1;
+    } else if (event->type == EVENT_PROCESS_CREATE) {
+        behavior.rapid_process_spawning = 1;
+    }
+    
     float score_adjustment = user_filter_adjust_score(
         event->process_id, 
-        event->score_impact, 
-        event->behavior_flags);
+        event->score_impact,
+        &behavior);
     
     // If significantly reduced by user filter, may skip processing
     if (score_adjustment < 0.1f * event->score_impact) {
@@ -515,7 +618,7 @@ void detection_handle_event(const Event* event) {
     }
     
     // Process the event through the main detection logic
-    detection_process_event(event);
+    detection_process_event(event, config);
     
     // Check if we need to take immediate action based on updated scores
     check_threat_thresholds(event->process_id);
@@ -592,8 +695,14 @@ void detection_remove_process(pid_t pid) {
     if (context) {
         // Log final status before removing
         if (context->total_score > 30.0f) {
-            logger_detection("Process terminated with suspicion score %.1f: %s (PID: %d)",
-                           context->total_score, process_name, pid);
+            // Create message string for detection logger
+            char message[512];
+            snprintf(message, sizeof(message), 
+                    "Process terminated with suspicion score %.1f: %s (PID: %d)",
+                    context->total_score, process_name, pid);
+            
+            // Call logger with proper parameters
+            logger_detection(context, message);
         }
         
         free(context);
@@ -603,7 +712,7 @@ void detection_remove_process(pid_t pid) {
 
 // Helper functions that may need implementation:
 
-static void get_process_name_from_pid(pid_t pid, char* buffer, size_t buffer_size) {
+void get_process_name_from_pid(pid_t pid, char* buffer, size_t buffer_size) {
     // Implementation depends on what's available in your codebase
     // This might call process_monitor_get_process_name or similar
     snprintf(buffer, buffer_size, "unknown"); // Default
@@ -625,16 +734,70 @@ static void get_process_name_from_pid(pid_t pid, char* buffer, size_t buffer_siz
     }
 }
 
-static void get_process_path_from_pid(pid_t pid, char* buffer, size_t buffer_size) {
+void get_process_path_from_pid(pid_t pid, char* buffer, size_t buffer_size) {
     // Implementation depends on what's available in your codebase
     snprintf(buffer, buffer_size, "unknown"); // Default
     
-    // Try to get from /proc/[pid]/exe
+    // Try to get from /proc/%d/exe
     char proc_path[64];
     snprintf(proc_path, sizeof(proc_path), "/proc/%d/exe", pid);
     
     ssize_t len = readlink(proc_path, buffer, buffer_size - 1);
     if (len > 0) {
         buffer[len] = '\0';
+    }
+}
+
+// Updates the overall detection status based on all monitor data
+static void update_detection_status(void) {
+    // Check all monitored processes for changes in threat level
+    // This would aggregate data across all monitoring components
+    
+    // For now, this is a placeholder that just logs the call
+    LOG_DEBUG("Updating detection status%s", "");
+    
+    // In a complete implementation, this would:
+    // 1. Check all process monitors for high scores
+    // 2. Update global threat assessment
+    // 3. Trigger appropriate responses based on threat level
+}
+
+// Check if a process has crossed a threat threshold requiring action
+static void check_threat_thresholds(pid_t pid) {
+    DetectionContext* context = get_detection_context(pid);
+    if (!context) {
+        return;
+    }
+    
+    // Get the current config for thresholds
+    Configuration* config = config_get_current();
+    if (!config) {
+        LOG_ERROR("Failed to get configuration for threshold check%s", "");
+        return;
+    }
+    
+    // Check if severity requires action
+    if (context->severity >= SEVERITY_MEDIUM) {
+        char process_name[256] = {0};
+        get_process_name_from_pid(pid, process_name, sizeof(process_name));
+        
+        LOG_WARNING("Process %s (PID %d) has crossed threat threshold: %.2f", 
+                   process_name, pid, context->total_score);
+        
+        // Create message for detection log
+        char message[512];
+        snprintf(message, sizeof(message), 
+                "Process has suspicious behavior score %.1f", 
+                context->total_score);
+        
+        // Log detection with proper arguments
+        logger_detection(context, message);
+        
+        // Determine and take action
+        ResponseAction action = scoring_determine_action(context->severity, config);
+        context->action = action;
+        
+        // Log the action
+        logger_action(action, pid, process_name);
     }
 }
