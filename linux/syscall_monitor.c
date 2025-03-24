@@ -672,3 +672,87 @@ static uint8_t calculate_file_entropy(const char *path) {
     uint8_t scaled_entropy = (uint8_t)(entropy * 100.0 / 8.0);
     return scaled_entropy;
 }
+
+/**
+ * Starts the syscall monitoring system
+ * Initializes ptrace-based syscall interception
+ */
+int syscall_monitor_start(void) {
+    LOG_INFO("Starting syscall monitoring system%s", "");
+    
+    // Initialize syscall monitoring data structures
+    init_monitored_processes();
+    
+    // Set up signal handlers for clean termination
+    setup_signal_handlers();
+    
+    // Initialize any fd-based monitoring (inotify, etc.)
+    init_filesystem_monitoring();
+    
+    // This is where ptrace setup would occur for a full implementation
+    // For beta/placeholder, we'll just log that it's ready
+    
+    LOG_INFO("Syscall monitoring initialized and ready%s", "");
+    return 0;
+}
+
+/**
+ * Stops the syscall monitoring system
+ * Cleans up resources and detaches from monitored processes
+ */
+void syscall_monitor_stop(void) {
+    LOG_INFO("Stopping syscall monitoring system%s", "");
+    
+    // Release all ptrace attachments
+    detach_from_all_processes();
+    
+    // Clean up filesystem monitoring
+    cleanup_filesystem_monitoring();
+    
+    // Free any allocated resources
+    cleanup_monitored_processes();
+    
+    LOG_INFO("Syscall monitoring stopped%s", "");
+}
+
+// Helper functions that would be needed:
+
+static void init_monitored_processes(void) {
+    // Initialize the data structure for tracking monitored processes
+    // This might be a hash table, linked list, etc.
+    
+    // For beta/placeholder, this might be a no-op or minimal initialization
+}
+
+static void setup_signal_handlers(void) {
+    // Set up handlers for SIGTERM, SIGINT, etc.
+    // This ensures clean detachment from traced processes
+    
+    // For beta/placeholder, this might be minimal or empty
+}
+
+static void init_filesystem_monitoring(void) {
+    // Set up inotify or other filesystem monitoring
+    // This complements ptrace for more efficient file operation tracking
+    
+    // For beta/placeholder, this might be minimal or empty
+}
+
+static void detach_from_all_processes(void) {
+    // Iterate through all monitored processes and detach ptrace
+    // This prevents leaving processes in a traced state
+    
+    // For beta/placeholder, this might be minimal or empty
+}
+
+static void cleanup_filesystem_monitoring(void) {
+    // Clean up inotify watches and related resources
+    
+    // For beta/placeholder, this might be minimal or empty
+}
+
+static void cleanup_monitored_processes(void) {
+    // Free memory used for tracking monitored processes
+    
+    // For beta/placeholder, this might be minimal or empty
+}

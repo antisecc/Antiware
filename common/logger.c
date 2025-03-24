@@ -227,3 +227,48 @@ void log_fatal(const char* file, int line, const char* format, ...) {
     
     write_log_message(LOG_LEVEL_FATAL, file, line, message);
 }
+
+/**
+ * Logs detection events with specialized formatting
+ * Used for recording actual security detections
+ */
+void logger_detection(const char* format, ...) {
+    char message[1024];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+    
+    // Use a dedicated detection log level with appropriate formatting
+    write_log_message(LOG_LEVEL_WARNING, NULL, 0, "[DETECTION] %s", message);
+    
+    // For critical detections, we might also want to log to syslog
+    #ifdef __linux__
+    if (logger_state.destination == LOG_TO_SYSLOG || 
+        logger_state.current_level >= LOG_LEVEL_ERROR) {
+        syslog(LOG_WARNING, "[DETECTION] %s", message);
+    }
+    #endif
+}
+
+/**
+ * Logs response actions taken by the anti-ransomware system
+ * Used for recording interventions and mitigations
+ */
+void logger_action(const char* format, ...) {
+    char message[1024];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+    
+    // Actions are generally informational but important to track
+    write_log_message(LOG_LEVEL_INFO, NULL, 0, "[ACTION] %s", message);
+    
+    // For significant actions, also log to syslog
+    #ifdef __linux__
+    if (logger_state.destination == LOG_TO_SYSLOG) {
+        syslog(LOG_NOTICE, "[ACTION] %s", message);
+    }
+    #endif
+}

@@ -469,3 +469,172 @@ int detection_get_suspicious_processes(DetectionContext **contexts, size_t max_c
     
     return count;
 }
+
+
+/**
+ * Polls all monitoring components for suspicious activity
+ * Called periodically by the main polling thread
+ */
+void detection_poll(void) {
+    // Poll individual monitoring components
+    process_monitor_poll();
+    memory_monitor_poll();
+    
+    // Process any pending events from the monitoring components
+    // This is a coordinating function that ensures all monitors are checked
+    
+    // Check for process relationship changes (parent-child)
+    // These might indicate process injection or malicious spawning
+    
+    // Update global threat scores based on recent activity
+    update_detection_status();
+    
+    LOG_DEBUG("Detection poll completed%s", "");
+}
+
+/**
+ * Handles security events from monitoring components
+ * Primary entry point for event-driven detection
+ */
+void detection_handle_event(const Event* event) {
+    if (!event) {
+        LOG_ERROR("Null event passed to detection handler%s", "");
+        return;
+    }
+    
+    // First, check if the process is whitelisted
+    float score_adjustment = user_filter_adjust_score(
+        event->process_id, 
+        event->score_impact, 
+        event->behavior_flags);
+    
+    // If significantly reduced by user filter, may skip processing
+    if (score_adjustment < 0.1f * event->score_impact) {
+        LOG_DEBUG("Event filtered due to whitelist/trust: PID %d", event->process_id);
+        return;
+    }
+    
+    // Process the event through the main detection logic
+    detection_process_event(event);
+    
+    // Check if we need to take immediate action based on updated scores
+    check_threat_thresholds(event->process_id);
+}
+
+/**
+ * Adds a process to the monitoring and detection system
+ * Called when a new process is discovered or started
+ */
+int detection_add_process(pid_t pid) {
+    // Check if the process should be monitored (not system critical)
+    char process_name[256] = {0};
+    char process_path[1024] = {0};
+    
+    // Get basic process info
+    get_process_name_from_pid(pid, process_name, sizeof(process_name));
+    get_process_path_from_pid(pid, process_path, sizeof(process_path));
+    
+    LOG_DEBUG("Adding process to monitoring: %s (PID: %d)", process_name, pid);
+    
+    // Check if this process should be whitelisted
+    if (user_filter_is_whitelisted(pid, process_name, process_path)) {
+        LOG_DEBUG("Process whitelisted, minimal monitoring: %s (PID: %d)", 
+                 process_name, pid);
+        // Add with whitelist flag for minimal monitoring
+        return process_monitor_add_process(pid);
+    }
+    
+    // Add to process monitoring
+    int result = process_monitor_add_process(pid);
+    if (result != 0) {
+        LOG_ERROR("Failed to add process to monitor: %s (PID: %d)", 
+                 process_name, pid);
+        return result;
+    }
+    
+    // Add to memory monitoring
+    result = memory_monitor_add_process(pid);
+    if (result != 0) {
+        LOG_ERROR("Failed to add process to memory monitor: %s (PID: %d)", 
+                 process_name, pid);
+        // Continue anyway, partial monitoring is better than none
+    }
+    
+    // Initialize detection context for this process
+    DetectionContext* context = malloc(sizeof(DetectionContext));
+    if (context) {
+        scoring_init_context(context, pid, process_name);
+        // Store context in a global map or linked list
+        add_detection_context(pid, context);
+    }
+    
+    return 0;
+}
+
+/**
+ * Removes a process from the monitoring and detection system
+ * Called when a process terminates
+ */
+void detection_remove_process(pid_t pid) {
+    // Get process info before removing
+    char process_name[256] = {0};
+    get_process_name_from_pid(pid, process_name, sizeof(process_name));
+    
+    LOG_DEBUG("Removing process from monitoring: %s (PID: %d)", 
+             process_name, pid);
+    
+    // Remove from all monitoring components
+    process_monitor_remove_process(pid);
+    memory_monitor_remove_process(pid);
+    
+    // Free detection context if it exists
+    DetectionContext* context = get_detection_context(pid);
+    if (context) {
+        // Log final status before removing
+        if (context->total_score > 30.0f) {
+            logger_detection("Process terminated with suspicion score %.1f: %s (PID: %d)",
+                           context->total_score, process_name, pid);
+        }
+        
+        free(context);
+        remove_detection_context(pid);
+    }
+}
+
+// Helper functions that may need implementation:
+
+static void get_process_name_from_pid(pid_t pid, char* buffer, size_t buffer_size) {
+    // Implementation depends on what's available in your codebase
+    // This might call process_monitor_get_process_name or similar
+    snprintf(buffer, buffer_size, "unknown"); // Default
+    
+    // Try to get from /proc/[pid]/comm
+    char proc_path[64];
+    snprintf(proc_path, sizeof(proc_path), "/proc/%d/comm", pid);
+    
+    FILE* f = fopen(proc_path, "r");
+    if (f) {
+        if (fgets(buffer, buffer_size, f)) {
+            // Remove trailing newline
+            size_t len = strlen(buffer);
+            if (len > 0 && buffer[len-1] == '\n') {
+                buffer[len-1] = '\0';
+            }
+        }
+        fclose(f);
+    }
+}
+
+static void get_process_path_from_pid(pid_t pid, char* buffer, size_t buffer_size) {
+    // Implementation depends on what's available in your codebase
+    snprintf(buffer, buffer_size, "unknown"); // Default
+    
+    // Try to get from /proc/[pid]/exe
+    char proc_path[64];
+    snprintf(proc_path, sizeof(proc_path), "/proc/%d/exe", pid);
+    
+    ssize_t len = readlink(proc_path, buffer, buffer_size - 1);
+    if (len > 0) {
+        buffer[len] = '\0';
+    }
+}
