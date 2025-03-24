@@ -1,25 +1,26 @@
-#ifndef LOGGER_H
-#define LOGGER_H
+#ifndef ANTIRANSOM_LOGGER_H
+#define ANTIRANSOM_LOGGER_H
 
-typedef enum {
-    LOG_LEVEL_DEBUG = 0,
-    LOG_LEVEL_INFO,
-    LOG_LEVEL_WARNING,
-    LOG_LEVEL_ERROR,
-    LOG_LEVEL_FATAL
-} LogLevel;
-
+// Log destinations
 typedef enum {
     LOG_TO_STDOUT = 0,
-    LOG_TO_FILE,
-    LOG_TO_SYSLOG
+    LOG_TO_FILE = 1,
+    LOG_TO_SYSLOG = 2
 } LogDestination;
 
-// Initialize the logger
-int logger_init(LogDestination destination, LogLevel level);
+// Log levels
+typedef enum {
+    LOG_LEVEL_DEBUG = 0,
+    LOG_LEVEL_INFO = 1,
+    LOG_LEVEL_WARNING = 2,
+    LOG_LEVEL_ERROR = 3,
+    LOG_LEVEL_FATAL = 4
+} LogLevel;
 
-// Close the logger
+// Logger API
+int logger_init(LogDestination destination, LogLevel level);
 void logger_cleanup(void);
+void logger_set_verbose(int verbose);  // Add this function declaration
 
 // Log functions
 void log_debug(const char* file, int line, const char* format, ...);
@@ -28,11 +29,15 @@ void log_warning(const char* file, int line, const char* format, ...);
 void log_error(const char* file, int line, const char* format, ...);
 void log_fatal(const char* file, int line, const char* format, ...);
 
-// Convenient macros
-#define LOG_DEBUG(format, ...) log_debug(__FILE__, __LINE__, format "%s", ##__VA_ARGS__, "")
-#define LOG_INFO(format, ...) log_info(__FILE__, __LINE__, format "%s", ##__VA_ARGS__, "")
-#define LOG_WARNING(format, ...) log_warning(__FILE__, __LINE__, format "%s", ##__VA_ARGS__, "")
-#define LOG_ERROR(format, ...) log_error(__FILE__, __LINE__, format "%s", ##__VA_ARGS__, "")
-#define LOG_FATAL(format, ...) log_fatal(__FILE__, __LINE__, format "%s", ##__VA_ARGS__, "")
+// Helper macros for logging
+#define LOG_DEBUG(format, ...) log_debug(__FILE__, __LINE__, format, ##__VA_ARGS__)
+#define LOG_INFO(format, ...) log_info(__FILE__, __LINE__, format, ##__VA_ARGS__)
+#define LOG_WARNING(format, ...) log_warning(__FILE__, __LINE__, format, ##__VA_ARGS__)
+#define LOG_ERROR(format, ...) log_error(__FILE__, __LINE__, format, ##__VA_ARGS__)
+#define LOG_FATAL(format, ...) log_fatal(__FILE__, __LINE__, format, ##__VA_ARGS__)
 
-#endif // LOGGER_H
+// Specialized logging
+void logger_detection(const char* format, ...);
+void logger_action(const char* format, ...);
+
+#endif // ANTIRANSOM_LOGGER_H

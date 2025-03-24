@@ -641,3 +641,71 @@ int memory_monitor_get_stats(pid_t pid, MemoryStats* stats) {
     
     return 0;
 }
+
+// Modify scan_memory_regions to reduce log verbosity
+static void scan_memory_regions(pid_t pid, EventHandler handler, void* user_data) {
+    // Get process context
+    ProcessContext* context = get_process_context(pid);
+    if (!context) {
+        return;
+    }
+    
+    // Skip memory scanning for low-monitoring processes
+    if (context->monitoring_level == MONITORING_LEVEL_LOW) {
+        return;
+    }
+    
+    char maps_path[64];
+    snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
+    
+    FILE* maps_file = fopen(maps_path, "r");
+    if (!maps_file) {
+        // Don't log errors for processes that might have terminated
+        return;
+    }
+    
+    char line[512];
+    unsigned long start, end;
+    char perms[5];
+    char pathname[256];
+    int interesting_regions = 0;
+    int total_regions = 0;
+    
+    LOG_DEBUG("Scanning memory regions for process %d (%s)", pid, context->command);
+    
+    while (fgets(line, sizeof(line), maps_file)) {
+        // Parse the line
+        memset(pathname, 0, sizeof(pathname));
+        int result = sscanf(line, "%lx-%lx %4s %*s %*s %*s %255s", &start, &end, perms, pathname);
+        
+        if (result < 3) {
+            continue;
+        }
+        
+        total_regions++;
+        
+        // Skip non-rwx regions for efficiency, unless it's an interesting file
+        if (strcmp(perms, "rwx") != 0 && !is_interesting_file(pathname)) {
+            continue;
+        }
+        
+        interesting_regions++;
+        
+        // Only log every 5th region to reduce spam
+        if (interesting_regions % 5 == 0) {
+            LOG_DEBUG("Analyzing memory region at %lx-%lx (%s) for process %d", 
+                      start, end, perms, pid);
+        }
+        
+        // Process the memory region
+        analyze_memory_region(pid, start, end, perms, pathname, handler, user_data);
+    }
+    
+    fclose(maps_file);
+    
+    // Only log a summary rather than details of each region
+    if (interesting_regions > 0) {
+        LOG_DEBUG("Scanned %d memory regions (%d interesting) for process %d", 
+                 total_regions, interesting_regions, pid);
+    }
+}

@@ -4,14 +4,23 @@
 #include <stdint.h>
 #include <time.h>
 
+/* Event sources */
+typedef enum {
+    EVENT_SOURCE_SYSCALL = 0,
+    EVENT_SOURCE_PROCESS = 1,
+    EVENT_SOURCE_MEMORY = 2,
+    EVENT_SOURCE_FILE_MONITOR = 3,  // Add file monitor source
+    // Other sources...
+} EventSource;
+
 /* Event types for unified monitoring */
 typedef enum {
     EVENT_FILE_ACCESS = 0,      // Any file access operation
-    EVENT_FILE_CREATE = 1,      // File creation
-    EVENT_FILE_MODIFY = 2,      // File modification
-    EVENT_FILE_DELETE = 3,      // File deletion
+    EVENT_FILE_CREATE = 50,     // File creation
+    EVENT_FILE_MODIFY = 51,     // File modification
+    EVENT_FILE_DELETE = 52,     // File deletion
     EVENT_FILE_WRITE = EVENT_FILE_MODIFY,  // Alias for file modification
-    EVENT_FILE_RENAME = 4,      // File rename operation
+    EVENT_FILE_RENAME = 53,     // File rename operation
     EVENT_FILE_PERMISSION = 5,  // Permission changes
     EVENT_PROCESS_CREATE,       // Process creation
     EVENT_PROCESS_TERMINATE,    // Process termination
@@ -39,12 +48,19 @@ typedef enum {
     EVENT_DETECTION_ALERT       // Security detection alerts
 } EventType;
 
+/* File event data structure */
+typedef struct {
+    char path[512];
+    char extension[32];
+} FileEvent;
+
 /* Generic event structure */
 typedef struct {
     EventType type;
     uint32_t process_id;
     time_t timestamp;
     float score_impact;       // How this event affects the score
+    EventSource source;       // Add event source
     
     union {
         struct {

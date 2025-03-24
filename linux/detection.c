@@ -136,7 +136,7 @@ static void remove_detection_context(pid_t pid) {
 }
 
 // Initialize the detection system
-int detection_init(void) {
+int detection_init(Configuration* config) {
     monitored_processes = malloc(MAX_MONITORED_PROCESSES * sizeof(ProcessMonitor));
     if (!monitored_processes) {
         LOG_ERROR("Failed to allocate memory for process monitors%s", "");
@@ -147,6 +147,15 @@ int detection_init(void) {
     process_count = 0;
     
     LOG_INFO("Detection system initialized%s", "");
+    
+    // Initialize directory monitoring if a directory is specified
+    if (config && config->watch_directory[0] != '\0') {
+        if (init_directory_monitoring(config->watch_directory) != 0) {
+            LOG_WARNING("Failed to initialize directory monitoring, continuing without it%s", "");
+            // Non-fatal error, continue with other detection
+        }
+    }
+    
     return 0;
 }
 
@@ -159,6 +168,9 @@ void detection_cleanup(void) {
     process_count = 0;
     
     LOG_INFO("Detection system cleaned up%s", "");
+    
+    // Clean up directory monitoring
+    cleanup_directory_monitoring();
 }
 
 // Process a new event and update detection state
@@ -562,6 +574,9 @@ int detection_get_suspicious_processes(DetectionContext **contexts, size_t max_c
  * Called periodically by the main polling thread
  */
 void detection_poll(void) {
+    // Process directory events
+    process_directory_events();
+    
     // Poll individual monitoring components
     process_monitor_poll();
     memory_monitor_poll();
@@ -799,5 +814,347 @@ static void check_threat_thresholds(pid_t pid) {
         
         // Log the action
         logger_action(action, pid, process_name);
+    }
+}
+
+// Modify evaluate_threat_level to be more selective about logs
+static void evaluate_threat_level(ProcessContext* context) {
+    if (!context) {
+        return;
+    }
+    
+    // Get current time for elapsed calculations
+    time_t now = time(NULL);
+    double elapsed = difftime(now, context->start_time);
+    
+    // Calculate threat level based on score and time
+    float score = context->threat_score;
+    ThreatLevel old_level = context->threat_level;
+    
+    // Determine the threat level
+    if (score >= threshold_critical) {
+        context->threat_level = THREAT_LEVEL_CRITICAL;
+    } else if (score >= threshold_high) {
+        context->threat_level = THREAT_LEVEL_HIGH;
+    } else if (score >= threshold_medium) {
+        context->threat_level = THREAT_LEVEL_MEDIUM;
+    } else if (score >= threshold_low) {
+        context->threat_level = THREAT_LEVEL_LOW;
+    } else {
+        context->threat_level = THREAT_LEVEL_NONE;
+    }
+    
+    // Only log if the threat level changed or it's not NONE
+    if (old_level != context->threat_level || context->threat_level > THREAT_LEVEL_NONE) {
+        // Get process name
+        const char* process_name = context->command[0] ? context->command : "Unknown";
+        
+        // Log based on threat level
+        switch (context->threat_level) {
+            case THREAT_LEVEL_CRITICAL:
+                LOG_FATAL("CRITICAL THREAT: Process %s (PID %d) has score %.2f - RANSOMWARE BEHAVIOR DETECTED", 
+                         process_name, context->pid, score);
+                break;
+                
+            case THREAT_LEVEL_HIGH:
+                LOG_ERROR("HIGH THREAT: Process %s (PID %d) has score %.2f - Highly suspicious activity", 
+                         process_name, context->pid, score);
+                break;
+                
+            case THREAT_LEVEL_MEDIUM:
+                LOG_WARNING("MEDIUM THREAT: Process %s (PID %d) has score %.2f - Suspicious activity detected", 
+                           process_name, context->pid, score);
+                break;
+                
+            case THREAT_LEVEL_LOW:
+                LOG_INFO("LOW THREAT: Process %s (PID %d) has score %.2f - Slightly suspicious behavior", 
+                        process_name, context->pid, score);
+                break;
+                
+            case THREAT_LEVEL_NONE:
+                // Only log if transitioning from a higher level back to none
+                if (old_level > THREAT_LEVEL_NONE) {
+                    LOG_INFO("Threat cleared: Process %s (PID %d) is no longer suspicious (Score: %.2f)", 
+                            process_name, context->pid, score);
+                }
+                break;
+        }
+    }
+    
+    // Take action based on threat level
+    if (context->threat_level >= THREAT_LEVEL_HIGH && auto_respond) {
+        take_protective_action(context);
+    }
+}
+
+// Add directory monitoring implementation
+
+#include <sys/inotify.h>
+#include <unistd.h>
+#include <limits.h>
+
+// Directory monitoring context
+typedef struct {
+    int inotify_fd;
+    int watch_descriptor;
+    char path[512];
+    int initialized;
+} DirectoryMonitor;
+
+static DirectoryMonitor dir_monitor = {0};
+
+// Initialize directory monitoring
+static int init_directory_monitoring(const char* directory) {
+    if (!directory || directory[0] == '\0') {
+        LOG_DEBUG("No directory specified for monitoring%s", "");
+        return 0;  // Not an error, just nothing to monitor
+    }
+    
+    // Check if already initialized
+    if (dir_monitor.initialized) {
+        LOG_WARNING("Directory monitoring already initialized, cleaning up first%s", "");
+        // Cleanup existing monitor
+        if (dir_monitor.watch_descriptor >= 0) {
+            inotify_rm_watch(dir_monitor.inotify_fd, dir_monitor.watch_descriptor);
+        }
+        if (dir_monitor.inotify_fd >= 0) {
+            close(dir_monitor.inotify_fd);
+        }
+        memset(&dir_monitor, 0, sizeof(dir_monitor));
+    }
+    
+    // Initialize inotify
+    dir_monitor.inotify_fd = inotify_init();
+    if (dir_monitor.inotify_fd < 0) {
+        LOG_ERROR("Failed to initialize inotify: %s", strerror(errno));
+        return -1;
+    }
+    
+    // Add watch for the specified directory
+    dir_monitor.watch_descriptor = inotify_add_watch(dir_monitor.inotify_fd, directory, 
+                                                  IN_CREATE | IN_MODIFY | IN_DELETE | 
+                                                  IN_MOVED_FROM | IN_MOVED_TO);
+    
+    if (dir_monitor.watch_descriptor < 0) {
+        LOG_ERROR("Failed to add watch for directory %s: %s", directory, strerror(errno));
+        close(dir_monitor.inotify_fd);
+        return -1;
+    }
+    
+    // Store path and set initialized flag
+    strncpy(dir_monitor.path, directory, sizeof(dir_monitor.path) - 1);
+    dir_monitor.path[sizeof(dir_monitor.path) - 1] = '\0';
+    dir_monitor.initialized = 1;
+    
+    LOG_INFO("Directory monitoring initialized for: %s", directory);
+    return 0;
+}
+
+// Process directory events
+static void process_directory_events(void) {
+    if (!dir_monitor.initialized || dir_monitor.inotify_fd < 0) {
+        return;
+    }
+    
+    // Check if events are available without blocking
+    fd_set read_fds;
+    FD_ZERO(&read_fds);
+    FD_SET(dir_monitor.inotify_fd, &read_fds);
+    
+    struct timeval timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 0;
+    
+    if (select(dir_monitor.inotify_fd + 1, &read_fds, NULL, NULL, &timeout) <= 0) {
+        return;  // No events or error
+    }
+    
+    // Buffer for inotify events
+    char buffer[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+    
+    // Read events
+    ssize_t len = read(dir_monitor.inotify_fd, buffer, sizeof(buffer));
+    if (len <= 0) {
+        return;
+    }
+    
+    // Process all events in the buffer
+    char *ptr = buffer;
+    while (ptr < buffer + len) {
+        struct inotify_event *event = (struct inotify_event *)ptr;
+        
+        // Skip events without names
+        if (event->len > 0) {
+            // Get the full path of the file
+            char path[PATH_MAX];
+            snprintf(path, sizeof(path), "%s/%s", dir_monitor.path, event->name);
+            
+            // Log the event
+            if (event->mask & IN_CREATE) {
+                LOG_INFO("File created: %s", path);
+                // Create a detection event for this file creation
+                create_file_event(path, EVENT_FILE_CREATE);
+            }
+            else if (event->mask & IN_MODIFY) {
+                LOG_INFO("File modified: %s", path);
+                // Create a detection event for this file modification
+                create_file_event(path, EVENT_FILE_MODIFY);
+            }
+            else if (event->mask & IN_DELETE) {
+                LOG_INFO("File deleted: %s", path);
+                // Create a detection event for this file deletion
+                create_file_event(path, EVENT_FILE_DELETE);
+            }
+            else if (event->mask & (IN_MOVED_FROM | IN_MOVED_TO)) {
+                LOG_INFO("File moved: %s", path);
+                // Create a detection event for this file move
+                create_file_event(path, EVENT_FILE_RENAME);
+            }
+        }
+        
+        // Move to next event
+        ptr += sizeof(struct inotify_event) + event->len;
+    }
+}
+
+// Cleanup directory monitoring
+static void cleanup_directory_monitoring(void) {
+    if (dir_monitor.initialized) {
+        if (dir_monitor.watch_descriptor >= 0) {
+            inotify_rm_watch(dir_monitor.inotify_fd, dir_monitor.watch_descriptor);
+        }
+        if (dir_monitor.inotify_fd >= 0) {
+            close(dir_monitor.inotify_fd);
+        }
+        
+        LOG_INFO("Directory monitoring cleaned up for: %s", dir_monitor.path);
+        memset(&dir_monitor, 0, sizeof(dir_monitor));
+    }
+}
+
+// Helper to create file events
+static void create_file_event(const char* path, EventType type) {
+    // Create a synthetic process event for the file operation
+    Event event;
+    memset(&event, 0, sizeof(Event));
+    
+    event.process_id = getpid(); // Use our PID as a placeholder
+    event.timestamp = time(NULL);
+    event.source = EVENT_SOURCE_FILE_MONITOR;
+    event.type = type;
+    
+    // Set score impact based on event type
+    switch (type) {
+        case EVENT_FILE_CREATE:
+            event.score_impact = 1.5f;
+            break;
+        case EVENT_FILE_MODIFY:
+            event.score_impact = 2.0f;
+            break;
+        case EVENT_FILE_DELETE:
+            event.score_impact = 4.0f;
+            break;
+        case EVENT_FILE_RENAME:
+            event.score_impact = 2.5f;
+            break;
+        default:
+            event.score_impact = 1.0f;
+            break;
+    }
+    
+    // Fill in file information
+    strncpy(event.data.file_event.path, path, sizeof(event.data.file_event.path) - 1);
+    event.data.file_event.path[sizeof(event.data.file_event.path) - 1] = '\0';
+    
+    // Extract file extension
+    const char* ext = strrchr(path, '.');
+    if (ext) {
+        ext++; // Skip the dot
+        strncpy(event.data.file_event.extension, ext, sizeof(event.data.file_event.extension) - 1);
+        event.data.file_event.extension[sizeof(event.data.file_event.extension) - 1] = '\0';
+        
+        // Check if this is a known ransomware extension
+        if (is_ransomware_extension(ext)) {
+            // Increase impact score for ransomware extensions
+            event.score_impact += 10.0f;
+            LOG_WARNING("Potential ransomware extension detected: %s", ext);
+        }
+    }
+    
+    // Process the event through the detection system
+    detection_handle_event(&event, NULL);
+}
+
+// Update to handle file events from watched directories
+
+// Handle syscall events including file operations from watched directory
+static void handle_syscall_event(Event* event, ProcessContext* context) {
+    if (!event || !context) {
+        return;
+    }
+    
+    // Update basic event details
+    context->last_activity = event->timestamp;
+    context->syscall_count++;
+    
+    // Apply score impact
+    context->threat_score += event->score_impact;
+    
+    // Special handling for file-related syscalls
+    switch (event->type) {
+        case EVENT_SYSCALL_OPEN:
+            // Handle file open
+            break;
+            
+        case EVENT_SYSCALL_CREATE:
+            // Handle file creation
+            LOG_INFO("Process %d created file: %s", 
+                    event->process_id, event->data.syscall_event.path);
+            
+            // Check if this is a suspicious file pattern
+            if (is_ransomware_extension(event->data.syscall_event.path)) {
+                LOG_WARNING("Potential ransomware file created: %s", 
+                           event->data.syscall_event.path);
+                context->threat_score += 10.0f;  // Higher score for suspicious extension
+            }
+            break;
+            
+        case EVENT_SYSCALL_MODIFY:
+            // Handle file modification
+            LOG_INFO("Process %d modified file: %s", 
+                    event->process_id, event->data.syscall_event.path);
+            break;
+            
+        case EVENT_SYSCALL_DELETE:
+            // Handle file deletion
+            LOG_INFO("Process %d deleted file: %s", 
+                    event->process_id, event->data.syscall_event.path);
+            
+            // Deletion is more suspicious than other operations
+            context->threat_score += 1.0f;
+            break;
+            
+        case EVENT_SYSCALL_RENAME:
+            // Handle file rename
+            LOG_INFO("Process %d renamed file: %s", 
+                    event->process_id, event->data.syscall_event.path);
+            
+            // Check if renamed to ransomware extension
+            if (is_ransomware_extension(event->data.syscall_event.path)) {
+                LOG_WARNING("File renamed to ransomware extension: %s", 
+                           event->data.syscall_event.path);
+                context->threat_score += 8.0f;  // Significantly suspicious
+            }
+            break;
+            
+        // Other existing syscall types...
+            
+        default:
+            break;
+    }
+    
+    // Track file operations by path to detect mass operations
+    if (is_file_operation(event->type)) {
+        track_file_operation(context, event->data.syscall_event.path);
     }
 }

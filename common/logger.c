@@ -4,6 +4,7 @@
  */
 
 #include "logger.h"
+#include "config.h"  // Add this include for Configuration type
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -21,12 +22,14 @@ static struct {
     FILE* log_file;
     char log_filename[256];
     int initialized;
+    int verbose_mode;  // Store verbose mode directly in logger state
 } logger_state = {
     .destination = LOG_TO_STDOUT,
     .current_level = LOG_LEVEL_INFO,
     .log_file = NULL,
     .log_filename = "",
-    .initialized = 0
+    .initialized = 0,
+    .verbose_mode = 0
 };
 
 // Convert LogLevel to string representation
@@ -55,6 +58,56 @@ static int level_to_syslog(LogLevel level) {
 }
 #endif
 
+// Filter function to reduce noise in logs - simplified version
+static int should_filter_log(LogLevel level, const char *message) {
+    // Never filter warnings, errors, or fatal messages
+    if (level > LOG_LEVEL_INFO) {
+        return 0;  // Don't filter
+    }
+    
+    // Don't filter when verbose logging is enabled
+    if (logger_state.verbose_mode) {
+        return 0;
+    }
+    
+    // Common patterns that flood the logs
+    const char *noise_patterns[] = {
+        "Added process to monitoring:", 
+        "Process whitelisted, minimal monitoring",
+        "Syscall detected:", 
+        "Analyzing memory region at",
+        "Skipping process",
+        "Process command line:",
+        "Unlikely to be ransomware",
+        "No suspicious activity detected",
+        "Using default configuration settings",
+        NULL
+    };
+    
+    // System processes that generate excessive logs
+    const char *noisy_processes[] = {
+        "kworker", "systemd", "snapd", "cron", "dbus", "NetworkManager",
+        "avahi", "cups", "polkit", "udisks", "pulseaudio", "rsyslog",
+        NULL
+    };
+    
+    // Check for noise patterns
+    for (int i = 0; noise_patterns[i] != NULL; i++) {
+        if (strstr(message, noise_patterns[i])) {
+            return 1;  // Filter this message
+        }
+    }
+    
+    // Check for noisy processes
+    for (int i = 0; noisy_processes[i] != NULL; i++) {
+        if (strstr(message, noisy_processes[i])) {
+            return 1;  // Filter this message
+        }
+    }
+    
+    return 0;  // Don't filter
+}
+
 // Initialize the logger
 int logger_init(LogDestination destination, LogLevel level) {
     // Close any open resources if already initialized
@@ -65,6 +118,7 @@ int logger_init(LogDestination destination, LogLevel level) {
     // Set the state
     logger_state.destination = destination;
     logger_state.current_level = level;
+    logger_state.verbose_mode = 0;  // Default to non-verbose
     
     // Handle destination-specific initialization
     switch (destination) {
@@ -122,41 +176,80 @@ void logger_cleanup(void) {
     logger_state.initialized = 0;
 }
 
-// Internal function to write a log message
-static void write_log_message(LogLevel level, const char* file, int line, const char* message) {
-    if (!logger_state.initialized || level < logger_state.current_level) {
+// Modify the write_log_message function to use the filter
+void write_log_message(LogLevel level, const char* source_file, int line_number, const char* format, ...) {
+    // Skip logging if level is below current threshold
+    if (level < logger_state.current_level || !logger_state.initialized) {
         return;
     }
     
-    // Get current time
+    // Format the message first so we can filter based on content
+    char message[1024];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+    
+    // Apply filtering
+    if (should_filter_log(level, message)) {
+        return;
+    }
+    
+    // Rest of original function stays the same
     time_t now = time(NULL);
-    struct tm *tm_info = localtime(&now);
+    struct tm* tm_info = localtime(&now);
+    
     char timestamp[20];
     strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
     
-    // Create formatted message with timestamp, level, and source location
-    char full_message[1024];
-    snprintf(full_message, sizeof(full_message), "[%s] [%s] %s:%d - %s", 
-             timestamp, level_to_string(level), file, line, message);
+    // Format the log message
+    char formatted_message[1200];
+    
+    if (source_file && line_number > 0) {
+        char source_info[128];
+        char filename[64] = {0};
+        
+        // Extract just the filename from the path
+        const char* last_slash = strrchr(source_file, '/');
+        if (!last_slash) {
+            last_slash = strrchr(source_file, '\\');
+        }
+        
+        if (last_slash) {
+            strncpy(filename, last_slash + 1, sizeof(filename) - 1);
+        } else {
+            strncpy(filename, source_file, sizeof(filename) - 1);
+        }
+        
+        snprintf(source_info, sizeof(source_info), "%s:%d", filename, line_number);
+        snprintf(formatted_message, sizeof(formatted_message), "[%s] [%s] %-15s | %s", 
+                timestamp, level_to_string(level), source_info, message);
+    } else {
+        snprintf(formatted_message, sizeof(formatted_message), "[%s] [%s] | %s", 
+                timestamp, level_to_string(level), message);
+    }
     
     // Output based on destination
     switch (logger_state.destination) {
-        case LOG_TO_STDOUT:
-            printf("%s\n", full_message);
-            fflush(stdout);
-            break;
-            
         case LOG_TO_FILE:
             if (logger_state.log_file) {
-                fprintf(logger_state.log_file, "%s\n", full_message);
+                fprintf(logger_state.log_file, "%s\n", formatted_message);
                 fflush(logger_state.log_file);
             }
             break;
             
         case LOG_TO_SYSLOG:
 #ifdef __linux__
-            syslog(level_to_syslog(level), "%s:%d - %s", file, line, message);
+            syslog(level_to_syslog(level), "%s", message);
+#else
+            fprintf(stdout, "%s\n", formatted_message);
 #endif
+            break;
+            
+        case LOG_TO_STDOUT:
+        default:
+            fprintf(stdout, "%s\n", formatted_message);
+            fflush(stdout);
             break;
     }
 }
@@ -281,4 +374,12 @@ void logger_action(const char* format, ...) {
         syslog(LOG_NOTICE, "[ACTION] %s", message);
     }
     #endif
+}
+
+// Add this function to set verbose mode from configuration
+void logger_set_verbose(int verbose) {
+    logger_state.verbose_mode = verbose;
+    if (verbose) {
+        log_info(__FILE__, __LINE__, "Verbose logging enabled");
+    }
 }

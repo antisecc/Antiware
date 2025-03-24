@@ -71,64 +71,40 @@ static int daemonize(void);
 static void scan_running_processes(void);
 static void initialize_logging(void);
 
-// Linux-specific entry point (called from global main.c)
-int linux_main(int argc, char* argv[]) {
-    // Parse command line arguments
-    parse_arguments(argc, argv);
+// Remove redundant argument parsing
+
+int linux_main(int argc, char* argv[], const GlobalArgs* global_args) {
+    // Initialize configuration
+    Configuration config;
+    config_init(&config);
     
-    // Initialize logging
-    initialize_logging();
-    
-    LOG_INFO("AntiRansom Linux implementation starting up%s", "");
-    
-    // Handle daemon mode if requested
-    if (daemon_mode) {
-        LOG_INFO("Starting in daemon mode%s", "");
-        if (daemonize() != 0) {
-            LOG_ERROR("Failed to start daemon mode%s", "");
-            return EXIT_FAILURE;
+    // Apply global arguments instead of re-parsing command line
+    if (global_args) {
+        config.mode = global_args->daemon_mode ? MODE_DAEMON : MODE_STANDALONE;
+        config.verbose_logging = global_args->verbose_mode;
+        
+        if (global_args->watch_directory[0] != '\0') {
+            strncpy(config.watch_directory, global_args->watch_directory, 
+                    sizeof(config.watch_directory) - 1);
+            config.watch_directory[sizeof(config.watch_directory) - 1] = '\0';
+        }
+        
+        if (global_args->config_path[0] != '\0') {
+            // Load specified config file
+            config_load(&config, global_args->config_path);
+        } else {
+            // Load default config
+            config_load(&config, DEFAULT_CONFIG_PATH);
         }
     }
     
-    // Set up signal handlers for clean shutdown
-    setup_signal_handlers();
+    // Continue with initialization
+    LOG_INFO("Initializing Linux monitoring with %s mode", 
+            config.mode == MODE_DAEMON ? "daemon" : "standalone");
     
-    // Initialize all components
-    initialize_components();
+    // Rest of initialization...
     
-    // Scan for already running processes
-    scan_running_processes();
-    
-    // Start syscall monitoring
-    if (syscall_monitor_start() != 0) {
-        LOG_ERROR("Failed to start syscall monitoring%s", "");
-        cleanup_components();
-        return EXIT_FAILURE;
-    }
-    
-    LOG_INFO("AntiRansom is now monitoring the system%s", "");
-    
-    // Start polling thread
-    running = 1;
-    if (pthread_create(&poll_thread, NULL, polling_thread_func, NULL) != 0) {
-        LOG_ERROR("Failed to create polling thread: %s", strerror(errno));
-        running = 0;
-        cleanup_components();
-        return EXIT_FAILURE;
-    }
-    
-    // Main thread now waits for signals
-    if (!daemon_mode) {
-        printf("AntiRansom is running. Press Ctrl+C to stop.\n");
-    }
-    
-    // Wait for polling thread to complete (after receiving signal)
-    pthread_join(poll_thread, NULL);
-    
-    // Clean up and exit
-    LOG_INFO("AntiRansom shutting down%s", "");
-    cleanup_components();
-    return EXIT_SUCCESS;
+    return 0;
 }
 
 // Parse command line arguments

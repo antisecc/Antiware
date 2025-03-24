@@ -988,3 +988,126 @@ void process_monitor_remove_process(pid_t pid) {
     // Remove from monitored processes list
     remove_process_info(pid);
 }
+
+// Modify add_process_to_monitoring to reduce verbosity
+static int add_process_to_monitoring(pid_t pid, EventHandler handler, void* user_data) {
+    // Static counter to limit startup log spam
+    static int process_count = 0;
+    static time_t last_process_log = 0;
+    static int skipped_process_logs = 0;
+    
+    ProcessContext* context = create_process_context(pid);
+    if (!context) {
+        return -1;
+    }
+    
+    // Get process information
+    char exe_path[512] = {0};
+    char cmdline[1024] = {0};
+    char process_name[256] = {0};
+    
+    if (get_process_info(pid, exe_path, sizeof(exe_path), cmdline, sizeof(cmdline), process_name, sizeof(process_name)) != 0) {
+        free_process_context(context);
+        return -1;
+    }
+    
+    // Store process details
+    context->pid = pid;
+    strncpy(context->command, process_name, sizeof(context->command) - 1);
+    strncpy(context->path, exe_path, sizeof(context->path) - 1);
+    
+    // Check if this is a system utility that should be less closely monitored
+    int is_system = is_system_utility(process_name, exe_path);
+    if (is_system) {
+        context->monitoring_level = MONITORING_LEVEL_LOW;
+        
+        // Log at most once per minute, and only every 20th process to reduce spam
+        time_t now = time(NULL);
+        if (last_process_log < now - 60 || process_count % 20 == 0) {
+            if (skipped_process_logs > 0) {
+                LOG_DEBUG("Skipped logging %d system processes", skipped_process_logs);
+                skipped_process_logs = 0;
+            }
+            LOG_DEBUG("Process whitelisted as system utility: %s (PID %d)", process_name, pid);
+            last_process_log = now;
+        } else {
+            skipped_process_logs++;
+        }
+    } else {
+        context->monitoring_level = MONITORING_LEVEL_NORMAL;
+        
+        // Only log non-system processes
+        LOG_INFO("Added process to monitoring: %s (PID %d)", process_name, pid);
+    }
+    
+    // Add to global list
+    add_process_context(context);
+    process_count++;
+    
+    return 0;
+}
+
+// Update scan_existing_processes to report summary instead of each process
+static int scan_existing_processes(EventHandler handler, void* user_data) {
+    DIR* proc_dir = opendir("/proc");
+    if (!proc_dir) {
+        LOG_ERROR("Failed to open /proc directory: %s", strerror(errno));
+        return -1;
+    }
+    
+    int process_count = 0;
+    int system_count = 0;
+    int user_count = 0;
+    struct dirent* entry;
+    
+    LOG_INFO("Scanning existing processes...%s", "");
+    
+    while ((entry = readdir(proc_dir)) != NULL) {
+        // Check if the entry is a process directory (numeric name)
+        if (entry->d_type == DT_DIR && is_numeric(entry->d_name)) {
+            pid_t pid = atoi(entry->d_name);
+            
+            // Skip the process if it's already being monitored
+            if (get_process_context(pid) != NULL) {
+                continue;
+            }
+            
+            // Check if this is a system process
+            char exe_path[512] = {0};
+            char process_name[256] = {0};
+            
+            // Try to get basic info to determine if it's a system process
+            char proc_exe[64];
+            snprintf(proc_exe, sizeof(proc_exe), "/proc/%d/exe", pid);
+            ssize_t len = readlink(proc_exe, exe_path, sizeof(exe_path) - 1);
+            if (len > 0) {
+                exe_path[len] = '\0';
+                
+                // Extract process name from exe_path
+                char* last_slash = strrchr(exe_path, '/');
+                if (last_slash) {
+                    strncpy(process_name, last_slash + 1, sizeof(process_name) - 1);
+                }
+                
+                // Check if this is a system utility
+                if (is_system_utility(process_name, exe_path)) {
+                    system_count++;
+                } else {
+                    user_count++;
+                }
+                
+                // Add the process to monitoring
+                if (add_process_to_monitoring(pid, handler, user_data) == 0) {
+                    process_count++;
+                }
+            }
+        }
+    }
+    
+    closedir(proc_dir);
+    
+    LOG_INFO("Completed process scan: found %d processes (%d system, %d user)",
+             process_count, system_count, user_count);
+    
+    return process_count;
+}

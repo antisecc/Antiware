@@ -515,40 +515,68 @@ static int is_process_whitelisted(pid_t pid, const char *process_name, const cha
     return 0;
 }
 
-// Check if a process is a common system utility
+// Enhance system process filtering
+
+// System process recognition function
 static int is_system_utility(const char *process_name, const char *exe_path) {
     if (!process_name || !exe_path) {
         return 0;
     }
     
-    // Common system paths
+    // System paths check
     const char *system_paths[] = {
-        "/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/",
-        "/usr/local/bin/", "/usr/local/sbin/",
+        "/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/usr/local/bin/", 
+        "/usr/local/sbin/", "/lib/", "/usr/lib/", "/usr/libexec/", 
         NULL
     };
     
-    // Check if binary is in a system path
+    // Check if binary is in system path
+    int in_system_path = 0;
     for (int i = 0; system_paths[i] != NULL; i++) {
         if (strncmp(exe_path, system_paths[i], strlen(system_paths[i])) == 0) {
-            // Common utilities to always whitelist
-            const char *common_utils[] = {
-                "ls", "cat", "grep", "sed", "awk", "sort", "uniq", "wc",
-                "id", "whoami", "who", "w", "ps", "top", "htop", "free",
-                "df", "du", "date", "uname", "hostname", "uptime", "ifconfig",
-                "ip", "netstat", "ping", "ssh", "scp", "sftp", "rsync",
-                NULL
-            };
+            in_system_path = 1;
+            break;
+        }
+    }
+    
+    // Common system utilities
+    if (in_system_path) {
+        const char *system_processes[] = {
+            // Core system processes from context.md
+            "systemd", "init", "kthreadd", "kworker", "ksoftirqd", "migration",
+            "watchdog", "cpuhp", "kdevtmpfs", "netns", "khungtaskd", "oom_reaper",
+            "writeback", "kcompactd", "ksmd", "khugepaged", "kintegrityd", "kblockd",
+            "kswapd", "kdmflush", "bioset", "kpsmoused", "ipv6_addrconf",
             
-            for (int j = 0; common_utils[j] != NULL; j++) {
-                if (strcmp(process_name, common_utils[j]) == 0) {
-                    LOG_DEBUG("Process %s is a common system utility", process_name);
-                    return 1;
-                }
+            // Additional system services
+            "dbus", "NetworkManager", "avahi", "cups", "udev", "polkit", "udisks",
+            "snapd", "apparmor", "packagekit", "cron", "atd", "rsyslog", "auth",
+            "rtkit", "power", "bluetooth", "network", "mount", "login", "passwd",
+            
+            // Desktop services
+            "gdm", "lightdm", "sddm", "Xorg", "gnome-shell", "kwin", "plasma",
+            "mate-session", "xfce4-session", "pulseaudio", "pipewire",
+            
+            NULL
+        };
+        
+        for (int i = 0; system_processes[i] != NULL; i++) {
+            if (strcmp(process_name, system_processes[i]) == 0) {
+                return 1;
             }
-            
-            // For other system utilities, be more selective
-            return 0;
+        }
+        
+        // Process name prefixes for common daemons that have numeric suffixes
+        const char *common_prefixes[] = {
+            "kworker/", "ksoftirqd/", "migration/", "watchdog/", "cpuhp/",
+            "gvfs-", "gsd-", "gnome-", "kde", "plasma-", "kded", "at-spi", 
+            NULL
+        };
+        
+        for (int i = 0; common_prefixes[i] != NULL; i++) {
+            if (strncmp(process_name, common_prefixes[i], strlen(common_prefixes[i])) == 0) {
+                return 1;
+            }
         }
     }
     

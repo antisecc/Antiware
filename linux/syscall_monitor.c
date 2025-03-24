@@ -12,6 +12,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <math.h>
+#include <sys/inotify.h>
+#include <limits.h>
 #include "../include/antiransom.h"
 #include "../include/events.h"
 #include "../common/logger.h"
@@ -32,6 +34,21 @@ static SyscallContext *process_contexts = NULL;
 static size_t context_count = 0;
 static size_t context_capacity = 0;
 
+// Directory monitoring structure
+typedef struct {
+    int inotify_fd;
+    int watch_descriptor;
+    char path[512];
+    int initialized;
+} DirectoryMonitor;
+
+static DirectoryMonitor dir_monitor = {
+    .inotify_fd = -1,
+    .watch_descriptor = -1,
+    .path = {0},
+    .initialized = 0
+};
+
 // Forward declarations
 static void handle_syscall_entry(SyscallContext *ctx, struct user_regs_struct *regs);
 static void handle_syscall_exit(SyscallContext *ctx, struct user_regs_struct *regs, EventHandler event_handler, void *user_data);
@@ -51,9 +68,12 @@ static void init_filesystem_monitoring(void);
 static void detach_from_all_processes(void);
 static void cleanup_filesystem_monitoring(void);
 static void cleanup_monitored_processes(void);
+static int init_directory_monitoring(const char* directory);
+static void process_directory_events(EventHandler handler, void* user_data);
+static void cleanup_directory_monitoring(void);
 
 // Initialize the syscall monitor
-int syscall_monitor_init(void) {
+int syscall_monitor_init(const Configuration* config, EventHandler handler, void* user_data) {
     process_contexts = malloc(10 * sizeof(SyscallContext));
     if (!process_contexts) {
         LOG_ERROR("Failed to allocate memory for process contexts%s", "");
@@ -64,6 +84,15 @@ int syscall_monitor_init(void) {
     context_count = 0;
     
     LOG_INFO("Syscall monitor initialized%s", "");
+
+    // Initialize directory monitoring if configured
+    if (config && config->watch_directory[0] != '\0') {
+        if (init_directory_monitoring(config->watch_directory) != 0) {
+            LOG_WARNING("Failed to initialize directory monitoring, continuing without it%s", "");
+            // Non-fatal error, continue with other monitoring
+        }
+    }
+
     return 0;
 }
 
@@ -77,6 +106,9 @@ void syscall_monitor_cleanup(void) {
     context_count = 0;
     
     LOG_INFO("Syscall monitor cleaned up%s", "");
+
+    // Clean up directory monitoring
+    cleanup_directory_monitoring();
 }
 
 // Start monitoring a specific process
@@ -769,3 +801,266 @@ static void cleanup_monitored_processes(void) {
 
 // Add this after the last helper function (around line 760)
 #pragma GCC diagnostic pop
+
+// Modify handle_syscall to reduce excessive logs
+static void handle_syscall(int syscall_num, pid_t pid, const char* path, EventHandler handler, void* user_data) {
+    // Get process context
+    ProcessContext* context = get_process_context(pid);
+    if (!context) {
+        // Process not being monitored, skip
+        return;
+    }
+    
+    // If this is a low-monitored process, only log suspicious syscalls
+    if (context->monitoring_level == MONITORING_LEVEL_LOW) {
+        // Check if this is a potentially suspicious syscall
+        int is_suspicious = 0;
+        
+        // Suspicious syscalls: encryption-related, mass file operations, etc.
+        int suspicious_syscalls[] = {
+            SYS_encrypt, SYS_unlink, SYS_rename, SYS_renameat, SYS_renameat2,
+            SYS_chmod, SYS_fchmod, SYS_fchmodat, -1
+        };
+        
+        for (int i = 0; suspicious_syscalls[i] != -1; i++) {
+            if (syscall_num == suspicious_syscalls[i]) {
+                is_suspicious = 1;
+                break;
+            }
+        }
+        
+        // Skip logging for non-suspicious syscalls by low-monitored processes
+        if (!is_suspicious) {
+            return;
+        }
+    }
+    
+    // Create event for the syscall
+    Event event;
+    memset(&event, 0, sizeof(Event));
+    
+    event.process_id = pid;
+    event.timestamp = time(NULL);
+    event.source = EVENT_SOURCE_SYSCALL;
+    
+    // Set default score impact (will be adjusted below)
+    event.score_impact = 0.1f;
+    
+    // Process based on syscall type
+    switch (syscall_num) {
+        case SYS_open:
+        case SYS_openat:
+            event.type = EVENT_SYSCALL_OPEN;
+            
+            // Only log file open for interesting files or if high verbosity
+            if (is_interesting_extension(path) || logger_state.current_level <= LOG_LEVEL_DEBUG) {
+                LOG_DEBUG("Process %d opened file: %s", pid, path);
+            }
+            break;
+            
+        case SYS_unlink:
+        case SYS_unlinkat:
+            event.type = EVENT_SYSCALL_DELETE;
+            event.score_impact = 1.0f;
+            LOG_INFO("Process %d deleted file: %s", pid, path);
+            break;
+            
+        case SYS_rename:
+        case SYS_renameat:
+        case SYS_renameat2:
+            event.type = EVENT_SYSCALL_RENAME;
+            event.score_impact = 0.5f;
+            LOG_INFO("Process %d renamed file: %s", pid, path);
+            break;
+            
+        case SYS_chmod:
+        case SYS_fchmod:
+        case SYS_fchmodat:
+            event.type = EVENT_SYSCALL_CHMOD;
+            event.score_impact = 0.3f;
+            LOG_DEBUG("Process %d changed file permissions: %s", pid, path);
+            break;
+            
+        default:
+            // For other syscalls, only log at debug level
+            if (logger_state.current_level <= LOG_LEVEL_DEBUG) {
+                LOG_DEBUG("Process %d syscall %d on: %s", pid, syscall_num, path);
+            }
+            return;  // Don't create an event for untracked syscalls
+    }
+    
+    // Fill in the syscall event data
+    strncpy(event.data.syscall_event.path, path, sizeof(event.data.syscall_event.path) - 1);
+    event.data.syscall_event.path[sizeof(event.data.syscall_event.path) - 1] = '\0';
+    event.data.syscall_event.syscall_num = syscall_num;
+    
+    // Calculate path hash for detection
+    event.data.syscall_event.path_hash = calculate_string_hash(path);
+    
+    // Send the event to the handler
+    if (handler) {
+        handler(&event, user_data);
+    }
+}
+
+// Initialize directory monitoring
+static int init_directory_monitoring(const char* directory) {
+    if (!directory || directory[0] == '\0') {
+        LOG_DEBUG("No directory specified for monitoring%s", "");
+        return 0;  // Not an error, just nothing to monitor
+    }
+    
+    // Check if already initialized, clean up if needed
+    if (dir_monitor.initialized) {
+        LOG_DEBUG("Directory monitoring already initialized, cleaning up first%s", "");
+        if (dir_monitor.watch_descriptor >= 0) {
+            inotify_rm_watch(dir_monitor.inotify_fd, dir_monitor.watch_descriptor);
+        }
+        if (dir_monitor.inotify_fd >= 0) {
+            close(dir_monitor.inotify_fd);
+        }
+        dir_monitor.inotify_fd = -1;
+        dir_monitor.watch_descriptor = -1;
+        dir_monitor.initialized = 0;
+    }
+    
+    // Initialize inotify
+    dir_monitor.inotify_fd = inotify_init();
+    if (dir_monitor.inotify_fd < 0) {
+        LOG_ERROR("Failed to initialize inotify: %s", strerror(errno));
+        return -1;
+    }
+    
+    // Add watch for the specified directory
+    dir_monitor.watch_descriptor = inotify_add_watch(dir_monitor.inotify_fd, directory, 
+                                                  IN_CREATE | IN_MODIFY | IN_DELETE | 
+                                                  IN_MOVED_FROM | IN_MOVED_TO);
+    
+    if (dir_monitor.watch_descriptor < 0) {
+        LOG_ERROR("Failed to add watch for directory %s: %s", directory, strerror(errno));
+        close(dir_monitor.inotify_fd);
+        dir_monitor.inotify_fd = -1;
+        return -1;
+    }
+    
+    // Store path and set initialized flag
+    strncpy(dir_monitor.path, directory, sizeof(dir_monitor.path) - 1);
+    dir_monitor.path[sizeof(dir_monitor.path) - 1] = '\0';
+    dir_monitor.initialized = 1;
+    
+    LOG_INFO("Directory monitoring initialized for: %s", directory);
+    return 0;
+}
+
+// Process directory events
+static void process_directory_events(EventHandler handler, void* user_data) {
+    if (!dir_monitor.initialized || dir_monitor.inotify_fd < 0) {
+        return;
+    }
+    
+    // Check if events are available without blocking
+    fd_set read_fds;
+    FD_ZERO(&read_fds);
+    FD_SET(dir_monitor.inotify_fd, &read_fds);
+    
+    struct timeval timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 0;
+    
+    if (select(dir_monitor.inotify_fd + 1, &read_fds, NULL, NULL, &timeout) <= 0) {
+        return;  // No events or error
+    }
+    
+    // Buffer for inotify events
+    char buffer[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+    
+    // Read events
+    ssize_t len = read(dir_monitor.inotify_fd, buffer, sizeof(buffer));
+    if (len <= 0) {
+        return;
+    }
+    
+    // Process all events in the buffer
+    char *ptr = buffer;
+    while (ptr < buffer + len) {
+        struct inotify_event *event = (struct inotify_event *)ptr;
+        
+        // Skip events without names
+        if (event->len > 0) {
+            // Get the full path of the file
+            char path[PATH_MAX];
+            snprintf(path, sizeof(path), "%s/%s", dir_monitor.path, event->name);
+            
+            // Create an event based on the file operation
+            Event sec_event;
+            memset(&sec_event, 0, sizeof(Event));
+            
+            sec_event.process_id = getpid();  // Use our PID as placeholder
+            sec_event.timestamp = time(NULL);
+            sec_event.source = EVENT_SOURCE_SYSCALL;  // Reuse existing source
+            
+            // Extract file extension for potential ransomware check
+            const char* extension = strrchr(event->name, '.');
+            
+            // Determine event type and score impact
+            if (event->mask & IN_CREATE) {
+                sec_event.type = EVENT_SYSCALL_CREATE;
+                sec_event.score_impact = 1.0f;
+                LOG_INFO("File created in watched directory: %s", path);
+            }
+            else if (event->mask & IN_MODIFY) {
+                sec_event.type = EVENT_SYSCALL_MODIFY;
+                sec_event.score_impact = 2.0f;
+                LOG_INFO("File modified in watched directory: %s", path);
+            }
+            else if (event->mask & IN_DELETE) {
+                sec_event.type = EVENT_SYSCALL_DELETE;
+                sec_event.score_impact = 4.0f;
+                LOG_INFO("File deleted in watched directory: %s", path);
+            }
+            else if (event->mask & (IN_MOVED_FROM | IN_MOVED_TO)) {
+                sec_event.type = EVENT_SYSCALL_RENAME;
+                sec_event.score_impact = 2.5f;
+                LOG_INFO("File moved in watched directory: %s", path);
+            }
+            
+            // Fill in syscall event data
+            strncpy(sec_event.data.syscall_event.path, path, 
+                   sizeof(sec_event.data.syscall_event.path) - 1);
+            sec_event.data.syscall_event.path[sizeof(sec_event.data.syscall_event.path) - 1] = '\0';
+            
+            // Handle the event through the regular event system
+            if (handler) {
+                handler(&sec_event, user_data);
+            }
+        }
+        
+        // Move to next event
+        ptr += sizeof(struct inotify_event) + event->len;
+    }
+}
+
+// Update syscall_monitor_poll to process directory events
+void syscall_monitor_poll(EventHandler handler, void* user_data) {
+    // Process directory events
+    process_directory_events(handler, user_data);
+    
+    // Existing polling code...
+}
+
+// Cleanup directory monitoring
+static void cleanup_directory_monitoring(void) {
+    if (dir_monitor.initialized) {
+        if (dir_monitor.watch_descriptor >= 0) {
+            inotify_rm_watch(dir_monitor.inotify_fd, dir_monitor.watch_descriptor);
+            dir_monitor.watch_descriptor = -1;
+        }
+        if (dir_monitor.inotify_fd >= 0) {
+            close(dir_monitor.inotify_fd);
+            dir_monitor.inotify_fd = -1;
+        }
+        
+        LOG_INFO("Directory monitoring cleaned up for: %s", dir_monitor.path);
+        dir_monitor.initialized = 0;
+    }
+}

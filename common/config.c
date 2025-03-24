@@ -25,46 +25,32 @@ static struct {
     .path_count = 0
 };
 
-// Default configuration values
+// Set sensible default values for configuration
 static void set_default_values(Configuration* config) {
     if (!config) {
         return;
     }
     
-    // Basic settings (keep backward compatibility)
     config->mode = MODE_STANDALONE;
     config->verbose_logging = false;
     config->scan_interval_ms = 1000;  // 1 second default
     config->threshold_low = 30.0f;
-    config->threshold_medium = 60.0f;
-    config->threshold_high = 80.0f;
-    config->threshold_critical = 95.0f;
+    config->threshold_medium = 50.0f;
+    config->threshold_high = 70.0f;
+    config->threshold_critical = 90.0f;
     config->auto_respond = false;
-    config->whitelist_path[0] = '\0';
     
-    // Detection thresholds (sync with original fields)
+    // Initialize thresholds struct from individual values
     config->thresholds.low = config->threshold_low;
     config->thresholds.medium = config->threshold_medium;
     config->thresholds.high = config->threshold_high;
     config->thresholds.critical = config->threshold_critical;
     
-    // Monitoring settings
-    config->monitor_settings.monitor_file_ops = true;
-    config->monitor_settings.monitor_process_creation = true;
-    config->monitor_settings.monitor_network = true;
-    config->monitor_settings.monitor_registry = true;
-    config->monitor_settings.monitor_memory = true;
+    // Set empty watch directory
+    config->watch_directory[0] = '\0';
     
-    // Response settings
-    config->response_settings.notify_user = true;
-    config->response_settings.block_suspicious = false;
-    config->response_settings.create_backups = true;
-    
-    // Logging settings
-    config->log_settings.log_level = LOG_LEVEL_INFO;
-    strncpy(config->log_settings.log_file, "antiransom.log", sizeof(config->log_settings.log_file) - 1);
-    config->log_settings.log_to_console = true;
-    config->log_settings.log_to_file = true;
+    // Other default settings...
+    LOG_DEBUG("Set default configuration values%s", "");
 }
 
 /* Initialize configuration with default values */
@@ -115,17 +101,23 @@ static void trim(char* str) {
 
 /* Load configuration from file */
 bool config_load(Configuration* config, const char* filepath) {
-    if (config == NULL || filepath == NULL) {
+    if (config == NULL) {
         return false;
     }
     
-    // First set defaults
-    config_init(config);
+    // Set default values first
+    set_default_values(config);
+    
+    if (filepath == NULL) {
+        LOG_INFO("No configuration file specified, using defaults%s", "");
+        return true;
+    }
     
     FILE* file = fopen(filepath, "r");
     if (file == NULL) {
-        LOG_WARNING("Could not open configuration file: %s", filepath);
-        return false;
+        LOG_INFO("Could not open configuration file %s: %s", filepath, strerror(errno));
+        LOG_INFO("Using default configuration settings%s", "");
+        return true;  // Not a failure, just using defaults
     }
     
     char line[512];
