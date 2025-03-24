@@ -239,8 +239,12 @@ void logger_detection(const char* format, ...) {
     vsnprintf(message, sizeof(message), format, args);
     va_end(args);
     
+    // Create the formatted detection message
+    char detection_message[1024];
+    snprintf(detection_message, sizeof(detection_message), "[DETECTION] %s", message);
+    
     // Use a dedicated detection log level with appropriate formatting
-    write_log_message(LOG_LEVEL_WARNING, NULL, 0, "[DETECTION] %s", message);
+    write_log_message(LOG_LEVEL_WARNING, NULL, 0, detection_message);
     
     // For critical detections, we might also want to log to syslog
     #ifdef __linux__
@@ -262,8 +266,12 @@ void logger_action(const char* format, ...) {
     vsnprintf(message, sizeof(message), format, args);
     va_end(args);
     
+    // Create the formatted action message
+    char action_message[1024];
+    snprintf(action_message, sizeof(action_message), "[ACTION] %s", message);
+    
     // Actions are generally informational but important to track
-    write_log_message(LOG_LEVEL_INFO, NULL, 0, "[ACTION] %s", message);
+    write_log_message(LOG_LEVEL_INFO, NULL, 0, action_message);
     
     // For significant actions, also log to syslog
     #ifdef __linux__
