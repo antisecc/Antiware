@@ -852,3 +852,37 @@ static float calculate_trust_adjustment(pid_t pid, const char *process_name) {
     
     return trust_adjustment;
 }
+
+/**
+ * Checks if a process should be whitelisted based on its attributes
+ * Public interface for process whitelist checking
+ * 
+ * @param pid Process ID to check
+ * @param process_name Name of the process
+ * @param path Executable path of the process
+ * @return 1 if whitelisted, 0 if not
+ */
+int user_filter_is_whitelisted(pid_t pid, const char* process_name, const char* path) {
+    // First check our internal whitelist function
+    if (is_process_whitelisted(pid, process_name, path)) {
+        return 1;
+    }
+    
+    // Check if it's a common system utility
+    if (is_system_utility(process_name, path)) {
+        return 1;
+    }
+    
+    // Check process signatures
+    char cmdline[MAX_CMDLINE_LENGTH] = {0};
+    if (get_process_cmdline(pid, cmdline, sizeof(cmdline)) > 0) {
+        if (does_signature_match(pid, process_name, path, cmdline)) {
+            // Process matches a known good signature
+            LOG_DEBUG("Process matches known signature: %s (PID: %d)", process_name, pid);
+            return 1;
+        }
+    }
+    
+    // Not whitelisted through any method
+    return 0;
+}

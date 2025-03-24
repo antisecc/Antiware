@@ -923,3 +923,65 @@ static int is_process_alive(pid_t pid) {
     snprintf(path, sizeof(path), "/proc/%d", pid);
     return access(path, F_OK) == 0;
 }
+
+/**
+ * Adds a process to the monitoring system
+ * 
+ * @param pid Process ID to monitor
+ * @return 0 on success, non-zero on failure
+ */
+int process_monitor_add_process(pid_t pid) {
+    if (pid <= 0) {
+        LOG_ERROR("Invalid process ID: %d", pid);
+        return -1;
+    }
+    
+    // Check if process exists
+    char proc_path[64];
+    snprintf(proc_path, sizeof(proc_path), "/proc/%d", pid);
+    
+    if (access(proc_path, F_OK) != 0) {
+        LOG_ERROR("Process does not exist: %d", pid);
+        return -1;
+    }
+    
+    LOG_DEBUG("Adding process to monitor: PID %d", pid);
+    
+    // Find or create a monitor for this process
+    char process_name[256] = {0};
+    get_process_name(pid, process_name, sizeof(process_name));
+    
+    ProcessMonitor* monitor = find_or_create_process_monitor(pid, process_name);
+    if (!monitor) {
+        LOG_ERROR("Failed to create process monitor: %d", pid);
+        return -1;
+    }
+    
+    // Start monitoring
+    monitor->is_monitored = 1;
+    
+    LOG_INFO("Started monitoring process: %s (PID: %d)", process_name, pid);
+    return 0;
+}
+
+/**
+ * Removes a process from monitoring
+ * 
+ * @param pid Process ID to stop monitoring
+ */
+void process_monitor_remove_process(pid_t pid) {
+    ProcessMonitor* monitor = find_process_monitor(pid);
+    if (!monitor) {
+        LOG_DEBUG("Process not found in monitoring system: PID %d", pid);
+        return;
+    }
+    
+    LOG_INFO("Removing process from monitoring: %s (PID: %d)", 
+             monitor->process_name, monitor->pid);
+    
+    // Stop monitoring but keep the monitor for history
+    monitor->is_monitored = 0;
+    
+    // In a real implementation with resource constraints, you might 
+    // want to free the monitor struct here
+}
