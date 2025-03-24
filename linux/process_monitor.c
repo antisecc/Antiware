@@ -937,30 +937,36 @@ int process_monitor_add_process(pid_t pid) {
     }
     
     // Check if process exists
-    char proc_path[64];
-    snprintf(proc_path, sizeof(proc_path), "/proc/%d", pid);
-    
-    if (access(proc_path, F_OK) != 0) {
+    if (!is_process_alive(pid)) {
         LOG_ERROR("Process does not exist: %d", pid);
         return -1;
     }
     
     LOG_DEBUG("Adding process to monitor: PID %d", pid);
     
-    // Find or create a monitor for this process
-    char process_name[256] = {0};
-    get_process_name(pid, process_name, sizeof(process_name));
+    // Find or create process info
+    ProcessInfo* proc = find_process_info(pid);
+    if (proc) {
+        // Process already being monitored, just update it
+        LOG_DEBUG("Process already being monitored: PID %d", pid);
+        update_process_info(proc);
+        return 0;
+    }
     
-    ProcessMonitor* monitor = find_or_create_process_monitor(pid, process_name);
-    if (!monitor) {
-        LOG_ERROR("Failed to create process monitor: %d", pid);
+    // Create new process info
+    proc = add_process_info(pid);
+    if (!proc) {
+        LOG_ERROR("Failed to create process info: PID %d", pid);
         return -1;
     }
     
-    // Start monitoring
-    monitor->is_monitored = 1;
+    // Update process info
+    update_process_info(proc);
     
-    LOG_INFO("Started monitoring process: %s (PID: %d)", process_name, pid);
+    // Analyze for suspicious behavior
+    analyze_process(proc);
+    
+    LOG_INFO("Started monitoring process: %s (PID: %d)", proc->comm, pid);
     return 0;
 }
 
@@ -970,18 +976,15 @@ int process_monitor_add_process(pid_t pid) {
  * @param pid Process ID to stop monitoring
  */
 void process_monitor_remove_process(pid_t pid) {
-    ProcessMonitor* monitor = find_process_monitor(pid);
-    if (!monitor) {
+    ProcessInfo* proc = find_process_info(pid);
+    if (!proc) {
         LOG_DEBUG("Process not found in monitoring system: PID %d", pid);
         return;
     }
     
     LOG_INFO("Removing process from monitoring: %s (PID: %d)", 
-             monitor->process_name, monitor->pid);
+             proc->comm, proc->pid);
     
-    // Stop monitoring but keep the monitor for history
-    monitor->is_monitored = 0;
-    
-    // In a real implementation with resource constraints, you might 
-    // want to free the monitor struct here
+    // Remove from monitored processes list
+    remove_process_info(pid);
 }
