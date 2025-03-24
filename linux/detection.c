@@ -603,7 +603,7 @@ void detection_handle_event(const Event* event) {
         event->type == EVENT_FILE_MODIFY) {
         behavior.rapid_file_access = 1;
     } else if (event->type == EVENT_PROCESS_CREATE) {
-        behavior.high_process_activity = 1;  // Use existing field instead of rapid_process_spawning
+        behavior.system_changes = 1;  // Use existing field instead of rapid_process_spawning
     }
     
     float score_adjustment = user_filter_adjust_score(
