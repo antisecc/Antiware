@@ -44,6 +44,13 @@ static void handle_chmod(SyscallContext *ctx, struct user_regs_struct *regs, int
 static void handle_unlink(SyscallContext *ctx, struct user_regs_struct *regs, int entry, EventHandler handler, void *user_data);
 static uint8_t calculate_file_entropy(const char *path);
 static char *read_string_from_process(pid_t pid, unsigned long addr);
+// Helper functions for syscall monitoring
+static void init_monitored_processes(void);
+static void setup_signal_handlers(void);
+static void init_filesystem_monitoring(void);
+static void detach_from_all_processes(void);
+static void cleanup_filesystem_monitoring(void);
+static void cleanup_monitored_processes(void);
 
 // Initialize the syscall monitor
 int syscall_monitor_init(void) {
@@ -715,8 +722,11 @@ void syscall_monitor_stop(void) {
     LOG_INFO("Syscall monitoring stopped%s", "");
 }
 
-// Helper functions that would be needed:
+// Add this before the helper function implementations (around line 719)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
 
+// Helper functions for syscall monitoring
 static void init_monitored_processes(void) {
     // Initialize the data structure for tracking monitored processes
     // This might be a hash table, linked list, etc.
@@ -756,3 +766,6 @@ static void cleanup_monitored_processes(void) {
     
     // For beta/placeholder, this might be minimal or empty
 }
+
+// Add this after the last helper function (around line 760)
+#pragma GCC diagnostic pop
