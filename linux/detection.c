@@ -886,7 +886,6 @@ static void evaluate_threat_level(ProcessContext* context) {
     
     // Get current time for elapsed calculations
     time_t now = time(NULL);
-    double elapsed = difftime(now, context->start_time);
     
     // Calculate threat level based on score and time
     float score = context->threat_score;
@@ -1259,4 +1258,14 @@ static void track_file_operation(void* context, const char* path) {
     // This is a stub - implement based on your needs
     (void)context; // Suppress unused warning
     (void)path;    // Suppress unused warning
+}
+
+// Update function declarations:
+
+static void __attribute__((unused)) evaluate_threat_level(ProcessContext* context) {
+    // Function body...
+}
+
+static void __attribute__((unused)) handle_syscall_event(Event* event, ProcessContext* context) {
+    // Function body...
 }
