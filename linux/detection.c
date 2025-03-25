@@ -266,14 +266,16 @@ void detection_process_event(const Event *event, const Configuration *config) {
                    monitor->process_name, monitor->pid, monitor->context.total_score);
         
         // Log detailed information about the detection
-        logger_detection(&monitor->context, "Suspicious file operation patterns detected");
+        logger_detection("Suspicious file operation patterns detected: PID %d, Score %.2f", 
+                monitor->pid, monitor->context.total_score);
         
         // Take action based on severity and configuration
         ResponseAction action = scoring_determine_action(monitor->context.severity, config);
         monitor->context.action = action;
         
         // Log the action taken
-        logger_action(action, monitor->pid, monitor->process_name);
+        logger_action("Taking action %d on process %s (PID %d)", 
+             action, monitor->process_name, monitor->pid);
     }
 }
 
@@ -743,7 +745,7 @@ void detection_remove_process(pid_t pid) {
                     context->total_score, process_name, pid);
             
             // Call logger with proper parameters
-            logger_detection(context, message);
+            logger_detection("%s", message);
         }
         
         free(context);
@@ -851,6 +853,19 @@ static void evaluate_threat_level(ProcessContext* context) {
         return;
     }
     
+    // Get threshold values from configuration
+    Configuration* config = config_get_current();
+    if (!config) {
+        LOG_ERROR("Failed to get configuration for threat evaluation%s", "");
+        return;
+    }
+    
+    // Get thresholds from configuration
+    float threshold_low = config->threshold_low;
+    float threshold_medium = config->threshold_medium;
+    float threshold_high = config->threshold_high;
+    float threshold_critical = config->threshold_critical;
+    
     // Get current time for elapsed calculations
     time_t now = time(NULL);
     double elapsed = difftime(now, context->start_time);
@@ -910,7 +925,10 @@ static void evaluate_threat_level(ProcessContext* context) {
     }
     
     // Take action based on threat level
-    if (context->threat_level >= THREAT_LEVEL_HIGH && auto_respond) {
+    // Get auto_respond from config
+    Configuration* action_config = config_get_current();
+    if (context->threat_level >= THREAT_LEVEL_HIGH && 
+        action_config && action_config->auto_respond) {
         take_protective_action(context);
     }
 }
@@ -1126,54 +1144,56 @@ static void handle_syscall_event(Event* event, ProcessContext* context) {
     // Apply score impact
     context->threat_score += event->score_impact;
     
-    // Special handling for file-related syscalls
+    // Special handling for file-related events
     switch (event->type) {
-        case EVENT_SYSCALL_OPEN:
-            // Handle file open
+        case EVENT_FILE_ACCESS:
+            // Handle file access
+            LOG_INFO("Process %d accessed file: %s", 
+                    event->process_id, event->data.file_event.path);
             break;
             
-        case EVENT_SYSCALL_CREATE:
+        case EVENT_FILE_CREATE:
             // Handle file creation
             LOG_INFO("Process %d created file: %s", 
-                    event->process_id, event->data.syscall_event.path);
+                    event->process_id, event->data.file_event.path);
             
             // Check if this is a suspicious file pattern
-            if (is_ransomware_extension(event->data.syscall_event.path)) {
+            if (strrchr(event->data.file_event.path, '.') && 
+                is_ransomware_extension(strrchr(event->data.file_event.path, '.'))) {
                 LOG_WARNING("Potential ransomware file created: %s", 
-                           event->data.syscall_event.path);
+                           event->data.file_event.path);
                 context->threat_score += 10.0f;  // Higher score for suspicious extension
             }
             break;
             
-        case EVENT_SYSCALL_MODIFY:
+        case EVENT_FILE_MODIFY:
             // Handle file modification
             LOG_INFO("Process %d modified file: %s", 
-                    event->process_id, event->data.syscall_event.path);
+                    event->process_id, event->data.file_event.path);
             break;
             
-        case EVENT_SYSCALL_DELETE:
+        case EVENT_FILE_DELETE:
             // Handle file deletion
             LOG_INFO("Process %d deleted file: %s", 
-                    event->process_id, event->data.syscall_event.path);
+                    event->process_id, event->data.file_event.path);
             
             // Deletion is more suspicious than other operations
             context->threat_score += 1.0f;
             break;
             
-        case EVENT_SYSCALL_RENAME:
+        case EVENT_FILE_RENAME:
             // Handle file rename
             LOG_INFO("Process %d renamed file: %s", 
-                    event->process_id, event->data.syscall_event.path);
+                    event->process_id, event->data.file_event.path);
             
             // Check if renamed to ransomware extension
-            if (is_ransomware_extension(event->data.syscall_event.path)) {
+            if (strrchr(event->data.file_event.path, '.') && 
+                is_ransomware_extension(strrchr(event->data.file_event.path, '.'))) {
                 LOG_WARNING("File renamed to ransomware extension: %s", 
-                           event->data.syscall_event.path);
+                           event->data.file_event.path);
                 context->threat_score += 8.0f;  // Significantly suspicious
             }
             break;
-            
-        // Other existing syscall types...
             
         default:
             break;
@@ -1181,7 +1201,7 @@ static void handle_syscall_event(Event* event, ProcessContext* context) {
     
     // Track file operations by path to detect mass operations
     if (is_file_operation(event->type)) {
-        track_file_operation(context, event->data.syscall_event.path);
+        track_file_operation(context, event->data.file_event.path);
     }
 }
 
@@ -1221,4 +1241,22 @@ static void track_file_operation(void* context, const char* path) {
     // This is a stub - implement based on your needs
     (void)context; // Suppress unused warning
     (void)path;    // Suppress unused warning
+}
+
+// Add this definition for the protective action function
+static void take_protective_action(ProcessContext* context) {
+    if (!context) return;
+    
+    LOG_WARNING("Taking protective action against process %d", context->pid);
+    
+    // Get the process name
+    char process_name[256] = {0};
+    get_process_name_from_pid(context->pid, process_name, sizeof(process_name));
+    
+    // Log the action
+    logger_action("Taking protective action against %s (PID %d)", 
+                 process_name, context->pid);
+    
+    // Implementation of actual protective actions would go here
+    // This is a stub for now
 }

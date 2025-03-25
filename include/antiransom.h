@@ -4,6 +4,15 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* Threat level enumeration */
+typedef enum {
+    THREAT_LEVEL_NONE = 0,
+    THREAT_LEVEL_LOW,
+    THREAT_LEVEL_MEDIUM, 
+    THREAT_LEVEL_HIGH,
+    THREAT_LEVEL_CRITICAL
+} ThreatLevel;
+
 /* Operating modes */
 typedef enum {
     MODE_STANDALONE,  // Interactive mode with real-time feedback
