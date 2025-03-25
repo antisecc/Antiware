@@ -5,12 +5,26 @@
 #include <sys/types.h>
 #include <dirent.h>
 #include <unistd.h>
+#include <errno.h>  // Missing include for errno
+#include <sys/inotify.h>
+#include <unistd.h>
+#include <limits.h>
+
 
 #include "../include/antiransom.h"
 #include "../include/events.h"
 #include "../common/logger.h"
 #include "../common/scoring.h"
 #include "../common/config.h"
+
+// Forward declarations for directory monitoring functions
+static int init_directory_monitoring(const char* directory);
+static void process_directory_events(void);
+static void cleanup_directory_monitoring(void);
+static void create_file_event(const char* path, EventType type);
+static int is_ransomware_extension(const char* extension);
+static int is_file_operation(EventType type);
+static void track_file_operation(void* context, const char* path);
 
 // Maximum monitored processes
 #define MAX_MONITORED_PROCESSES 1024
@@ -33,6 +47,18 @@ typedef struct {
     DetectionPatterns patterns;
 } ProcessMonitor;
 
+// Process context structure
+typedef struct {
+    pid_t pid;
+    char command[256];
+    time_t start_time;
+    time_t last_activity;
+    int syscall_count;
+    float threat_score;
+    ThreatLevel threat_level;
+    // Add other fields as needed
+} ProcessContext;
+
 // Array of monitored processes
 static ProcessMonitor *monitored_processes = NULL;
 static size_t process_count = 0;
@@ -46,8 +72,8 @@ static int is_sensitive_file_type(const char *path);
 static void update_detection_score(ProcessMonitor *monitor);
 
 // Forward declarations for logger functions
-extern void logger_detection(const DetectionContext *context, const char *message);
-extern void logger_action(ResponseAction action, pid_t pid, const char *process_name);
+extern void logger_detection(const char* format, ...);
+extern void logger_action(const char* format, ...);
 
 // Forward declarations for monitor interfaces
 extern void process_monitor_poll(void);
@@ -805,15 +831,17 @@ static void check_threat_thresholds(pid_t pid) {
                 "Process has suspicious behavior score %.1f", 
                 context->total_score);
         
-        // Log detection with proper arguments
-        logger_detection(context, message);
+        // Log detection with proper format string
+        logger_detection("Detection: %s (PID: %d, Score: %.1f)", 
+                        message, pid, context->total_score);
         
         // Determine and take action
         ResponseAction action = scoring_determine_action(context->severity, config);
         context->action = action;
         
-        // Log the action
-        logger_action(action, pid, process_name);
+        // Log the action with proper format string
+        logger_action("Action: %d for process %s (PID: %d)", 
+                     action, process_name, pid);
     }
 }
 
@@ -889,9 +917,7 @@ static void evaluate_threat_level(ProcessContext* context) {
 
 // Add directory monitoring implementation
 
-#include <sys/inotify.h>
-#include <unistd.h>
-#include <limits.h>
+
 
 // Directory monitoring context
 typedef struct {
@@ -1068,13 +1094,13 @@ static void create_file_event(const char* path, EventType type) {
     
     // Extract file extension
     const char* ext = strrchr(path, '.');
+    // Just store the extension separately since file_event doesn't have an extension field
+    char extension[32] = {0};
     if (ext) {
-        ext++; // Skip the dot
-        strncpy(event.data.file_event.extension, ext, sizeof(event.data.file_event.extension) - 1);
-        event.data.file_event.extension[sizeof(event.data.file_event.extension) - 1] = '\0';
+        strncpy(extension, ext, sizeof(extension) - 1);
         
         // Check if this is a known ransomware extension
-        if (is_ransomware_extension(ext)) {
+        if (is_ransomware_extension(extension)) {
             // Increase impact score for ransomware extensions
             event.score_impact += 10.0f;
             LOG_WARNING("Potential ransomware extension detected: %s", ext);
@@ -1082,7 +1108,7 @@ static void create_file_event(const char* path, EventType type) {
     }
     
     // Process the event through the detection system
-    detection_handle_event(&event, NULL);
+    detection_handle_event(&event);
 }
 
 // Update to handle file events from watched directories
@@ -1157,4 +1183,42 @@ static void handle_syscall_event(Event* event, ProcessContext* context) {
     if (is_file_operation(event->type)) {
         track_file_operation(context, event->data.syscall_event.path);
     }
+}
+
+// Add these at the end of the file
+
+// Check if a file extension is associated with ransomware
+static int is_ransomware_extension(const char* extension) {
+    if (!extension) return 0;
+    
+    // Common ransomware extensions
+    const char* ransomware_exts[] = {
+        "encrypted", "locked", "crypt", "crypted", "enc", "ransom", 
+        "pays", "wallet", "cryptolocker", "locky", "wcry", "wncry",
+        "wncryt", "cerber", "zepto", NULL
+    };
+    
+    for (int i = 0; ransomware_exts[i] != NULL; i++) {
+        if (strcasecmp(extension, ransomware_exts[i]) == 0) {
+            return 1;
+        }
+    }
+    
+    return 0;
+}
+
+// Check if an event type is a file operation
+static int is_file_operation(EventType type) {
+    return (type == EVENT_FILE_CREATE || 
+            type == EVENT_FILE_MODIFY || 
+            type == EVENT_FILE_DELETE || 
+            type == EVENT_FILE_RENAME ||
+            type == EVENT_FILE_ACCESS);
+}
+
+// Track file operation for a process
+static void track_file_operation(void* context, const char* path) {
+    // This is a stub - implement based on your needs
+    (void)context; // Suppress unused warning
+    (void)path;    // Suppress unused warning
 }
