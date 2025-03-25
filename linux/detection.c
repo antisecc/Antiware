@@ -847,6 +847,24 @@ static void check_threat_thresholds(pid_t pid) {
     }
 }
 
+// Add this definition for the protective action function
+static void take_protective_action(ProcessContext* context) {
+    if (!context) return;
+    
+    LOG_WARNING("Taking protective action against process %d", context->pid);
+    
+    // Get the process name
+    char process_name[256] = {0};
+    get_process_name_from_pid(context->pid, process_name, sizeof(process_name));
+    
+    // Log the action
+    logger_action("Taking protective action against %s (PID %d)", 
+                 process_name, context->pid);
+    
+    // Implementation of actual protective actions would go here
+    // This is a stub for now
+}
+
 // Modify evaluate_threat_level to be more selective about logs
 static void evaluate_threat_level(ProcessContext* context) {
     if (!context) {
@@ -1241,22 +1259,4 @@ static void track_file_operation(void* context, const char* path) {
     // This is a stub - implement based on your needs
     (void)context; // Suppress unused warning
     (void)path;    // Suppress unused warning
-}
-
-// Add this definition for the protective action function
-static void take_protective_action(ProcessContext* context) {
-    if (!context) return;
-    
-    LOG_WARNING("Taking protective action against process %d", context->pid);
-    
-    // Get the process name
-    char process_name[256] = {0};
-    get_process_name_from_pid(context->pid, process_name, sizeof(process_name));
-    
-    // Log the action
-    logger_action("Taking protective action against %s (PID %d)", 
-                 process_name, context->pid);
-    
-    // Implementation of actual protective actions would go here
-    // This is a stub for now
 }
