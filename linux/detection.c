@@ -866,7 +866,7 @@ static void take_protective_action(ProcessContext* context) {
 }
 
 // Modify evaluate_threat_level to be more selective about logs
-static void evaluate_threat_level(ProcessContext* context) {
+static void __attribute__((unused)) evaluate_threat_level(ProcessContext* context) {
     if (!context) {
         return;
     }
@@ -885,7 +885,7 @@ static void evaluate_threat_level(ProcessContext* context) {
     float threshold_critical = config->threshold_critical;
     
     // Get current time for elapsed calculations
-    time_t now = time(NULL);
+    time_t now __attribute__((unused)) = time(NULL);
     
     // Calculate threat level based on score and time
     float score = context->threat_score;
@@ -1149,7 +1149,7 @@ static void create_file_event(const char* path, EventType type) {
 // Update to handle file events from watched directories
 
 // Handle syscall events including file operations from watched directory
-static void handle_syscall_event(Event* event, ProcessContext* context) {
+static void __attribute__((unused)) handle_syscall_event(Event* event, ProcessContext* context) {
     if (!event || !context) {
         return;
     }
@@ -1258,14 +1258,4 @@ static void track_file_operation(void* context, const char* path) {
     // This is a stub - implement based on your needs
     (void)context; // Suppress unused warning
     (void)path;    // Suppress unused warning
-}
-
-// Update function declarations:
-
-static void __attribute__((unused)) evaluate_threat_level(ProcessContext* context) {
-    // Function body...
-}
-
-static void __attribute__((unused)) handle_syscall_event(Event* event, ProcessContext* context) {
-    // Function body...
 }
