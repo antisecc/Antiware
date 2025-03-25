@@ -29,6 +29,83 @@ typedef struct {
     uint8_t entropy_before;
 } SyscallContext;
 
+// Process monitoring level
+typedef enum {
+    MONITORING_LEVEL_NONE = 0,
+    MONITORING_LEVEL_LOW,
+    MONITORING_LEVEL_MEDIUM,
+    MONITORING_LEVEL_HIGH
+} MonitoringLevel;
+
+// Process context structure
+typedef struct ProcessContext {
+    pid_t pid;
+    char process_name[256];
+    MonitoringLevel monitoring_level;
+    unsigned int flags;
+    time_t last_activity;
+    // Add other fields as needed
+} ProcessContext;
+
+// Add missing process context table
+static ProcessContext* process_contexts_table = NULL;
+static size_t process_context_count = 0;
+static size_t process_context_capacity = 0;
+
+// Add stub for calculate_string_hash
+static uint32_t calculate_string_hash(const char* str) {
+    uint32_t hash = 5381;
+    int c;
+    
+    while ((c = *str++)) {
+        hash = ((hash << 5) + hash) + c; // hash * 33 + c
+    }
+    
+    return hash;
+}
+
+// Add stub for is_interesting_extension
+static int is_interesting_extension(const char* path) {
+    if (!path) return 0;
+    
+    const char* ext = strrchr(path, '.');
+    if (!ext) return 0;
+    
+    // Common interesting file types
+    const char* interesting_extensions[] = {
+        ".doc", ".docx", ".xls", ".xlsx", ".pdf", ".jpg", ".jpeg", ".png",
+        ".zip", ".rar", ".7z", ".tar", ".gz", ".txt", ".db", NULL
+    };
+    
+    for (int i = 0; interesting_extensions[i] != NULL; i++) {
+        if (strcasecmp(ext, interesting_extensions[i]) == 0) {
+            return 1;
+        }
+    }
+    
+    return 0;
+}
+
+// Logger state structure (define missing logger_state)
+typedef struct {
+    int current_level;
+    FILE* log_file;
+    int initialized;
+} LoggerState;
+
+static LoggerState logger_state = {
+    .current_level = LOG_LEVEL_INFO,  // Default level
+    .log_file = NULL,
+    .initialized = 0
+};
+
+// Add missing get_process_context function
+static ProcessContext* get_process_context(pid_t pid) {
+    // For simplicity, return NULL
+    // In a real implementation, this would search a process context table
+    return NULL;
+}
+
 // Map of monitored processes
 static SyscallContext *process_contexts = NULL;
 static size_t context_count = 0;
@@ -74,6 +151,10 @@ static void cleanup_directory_monitoring(void);
 
 // Initialize the syscall monitor
 int syscall_monitor_init(const Configuration* config, EventHandler handler, void* user_data) {
+    // Mark unused parameters
+    (void)handler;    // Unused parameter 
+    (void)user_data;  // Unused parameter
+    
     process_contexts = malloc(10 * sizeof(SyscallContext));
     if (!process_contexts) {
         LOG_ERROR("Failed to allocate memory for process contexts%s", "");
@@ -802,7 +883,8 @@ static void cleanup_monitored_processes(void) {
 // Add this after the last helper function (around line 760)
 #pragma GCC diagnostic pop
 
-// Modify handle_syscall to reduce excessive logs
+// Replace the entire handle_syscall function (around line 806)
+
 static void handle_syscall(int syscall_num, pid_t pid, const char* path, EventHandler handler, void* user_data) {
     // Get process context
     ProcessContext* context = get_process_context(pid);
@@ -816,9 +898,9 @@ static void handle_syscall(int syscall_num, pid_t pid, const char* path, EventHa
         // Check if this is a potentially suspicious syscall
         int is_suspicious = 0;
         
-        // Suspicious syscalls: encryption-related, mass file operations, etc.
+        // Suspicious syscalls: unlink, rename, chmod, etc.
         int suspicious_syscalls[] = {
-            SYS_encrypt, SYS_unlink, SYS_rename, SYS_renameat, SYS_renameat2,
+            SYS_unlink, SYS_rename, SYS_renameat, 
             SYS_chmod, SYS_fchmod, SYS_fchmodat, -1
         };
         
@@ -850,7 +932,7 @@ static void handle_syscall(int syscall_num, pid_t pid, const char* path, EventHa
     switch (syscall_num) {
         case SYS_open:
         case SYS_openat:
-            event.type = EVENT_SYSCALL_OPEN;
+            event.type = EVENT_FILE_ACCESS; // Use EVENT_FILE_ACCESS instead of EVENT_SYSCALL_OPEN
             
             // Only log file open for interesting files or if high verbosity
             if (is_interesting_extension(path) || logger_state.current_level <= LOG_LEVEL_DEBUG) {
@@ -860,15 +942,14 @@ static void handle_syscall(int syscall_num, pid_t pid, const char* path, EventHa
             
         case SYS_unlink:
         case SYS_unlinkat:
-            event.type = EVENT_SYSCALL_DELETE;
+            event.type = EVENT_FILE_DELETE; // Use EVENT_FILE_DELETE instead
             event.score_impact = 1.0f;
             LOG_INFO("Process %d deleted file: %s", pid, path);
             break;
             
         case SYS_rename:
         case SYS_renameat:
-        case SYS_renameat2:
-            event.type = EVENT_SYSCALL_RENAME;
+            event.type = EVENT_FILE_RENAME; // Use EVENT_FILE_RENAME instead
             event.score_impact = 0.5f;
             LOG_INFO("Process %d renamed file: %s", pid, path);
             break;
@@ -876,7 +957,7 @@ static void handle_syscall(int syscall_num, pid_t pid, const char* path, EventHa
         case SYS_chmod:
         case SYS_fchmod:
         case SYS_fchmodat:
-            event.type = EVENT_SYSCALL_CHMOD;
+            event.type = EVENT_FILE_PERMISSION; // Use appropriate event type
             event.score_impact = 0.3f;
             LOG_DEBUG("Process %d changed file permissions: %s", pid, path);
             break;
@@ -889,13 +970,9 @@ static void handle_syscall(int syscall_num, pid_t pid, const char* path, EventHa
             return;  // Don't create an event for untracked syscalls
     }
     
-    // Fill in the syscall event data
-    strncpy(event.data.syscall_event.path, path, sizeof(event.data.syscall_event.path) - 1);
-    event.data.syscall_event.path[sizeof(event.data.syscall_event.path) - 1] = '\0';
-    event.data.syscall_event.syscall_num = syscall_num;
-    
-    // Calculate path hash for detection
-    event.data.syscall_event.path_hash = calculate_string_hash(path);
+    // Fill in the file event data (using file_event instead of syscall_event)
+    strncpy(event.data.file_event.path, path, sizeof(event.data.file_event.path) - 1);
+    event.data.file_event.path[sizeof(event.data.file_event.path) - 1] = '\0';
     
     // Send the event to the handler
     if (handler) {
@@ -999,35 +1076,32 @@ static void process_directory_events(EventHandler handler, void* user_data) {
             sec_event.timestamp = time(NULL);
             sec_event.source = EVENT_SOURCE_SYSCALL;  // Reuse existing source
             
-            // Extract file extension for potential ransomware check
-            const char* extension = strrchr(event->name, '.');
-            
             // Determine event type and score impact
             if (event->mask & IN_CREATE) {
-                sec_event.type = EVENT_SYSCALL_CREATE;
+                sec_event.type = EVENT_FILE_CREATE;
                 sec_event.score_impact = 1.0f;
                 LOG_INFO("File created in watched directory: %s", path);
             }
             else if (event->mask & IN_MODIFY) {
-                sec_event.type = EVENT_SYSCALL_MODIFY;
+                sec_event.type = EVENT_FILE_MODIFY;
                 sec_event.score_impact = 2.0f;
                 LOG_INFO("File modified in watched directory: %s", path);
             }
             else if (event->mask & IN_DELETE) {
-                sec_event.type = EVENT_SYSCALL_DELETE;
+                sec_event.type = EVENT_FILE_DELETE;
                 sec_event.score_impact = 4.0f;
                 LOG_INFO("File deleted in watched directory: %s", path);
             }
             else if (event->mask & (IN_MOVED_FROM | IN_MOVED_TO)) {
-                sec_event.type = EVENT_SYSCALL_RENAME;
+                sec_event.type = EVENT_FILE_RENAME;
                 sec_event.score_impact = 2.5f;
                 LOG_INFO("File moved in watched directory: %s", path);
             }
             
-            // Fill in syscall event data
-            strncpy(sec_event.data.syscall_event.path, path, 
-                   sizeof(sec_event.data.syscall_event.path) - 1);
-            sec_event.data.syscall_event.path[sizeof(sec_event.data.syscall_event.path) - 1] = '\0';
+            // Fill in file event data
+            strncpy(sec_event.data.file_event.path, path, 
+                   sizeof(sec_event.data.file_event.path) - 1);
+            sec_event.data.file_event.path[sizeof(sec_event.data.file_event.path) - 1] = '\0';
             
             // Handle the event through the regular event system
             if (handler) {
