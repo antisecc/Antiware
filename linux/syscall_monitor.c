@@ -99,10 +99,23 @@ static LoggerState logger_state = {
     .initialized = 0
 };
 
-// Add missing get_process_context function
+// Replace the stub get_process_context with a proper implementation
+
 static ProcessContext* get_process_context(pid_t pid) {
-    // For simplicity, return NULL
-    // In a real implementation, this would search a process context table
+    // Mark parameter as used to avoid warning
+    (void)pid;
+    
+    // If we have a process_contexts_table, search for the process
+    if (process_contexts_table && process_context_count > 0) {
+        for (size_t i = 0; i < process_context_count; i++) {
+            if (process_contexts_table[i].pid == pid) {
+                return &process_contexts_table[i];
+            }
+        }
+    }
+    
+    // Not found - in a real implementation, we might create one
+    // For now, return NULL to indicate the process is not being monitored
     return NULL;
 }
 
@@ -155,14 +168,26 @@ int syscall_monitor_init(const Configuration* config, EventHandler handler, void
     (void)handler;    // Unused parameter 
     (void)user_data;  // Unused parameter
     
+    // Allocate syscall context array
     process_contexts = malloc(10 * sizeof(SyscallContext));
     if (!process_contexts) {
+        LOG_ERROR("Failed to allocate memory for syscall contexts%s", "");
+        return -1;
+    }
+    
+    // Also initialize process context table
+    process_contexts_table = malloc(10 * sizeof(ProcessContext));
+    if (!process_contexts_table) {
         LOG_ERROR("Failed to allocate memory for process contexts%s", "");
+        free(process_contexts);
+        process_contexts = NULL;
         return -1;
     }
     
     context_capacity = 10;
     context_count = 0;
+    process_context_capacity = 10;
+    process_context_count = 0;
     
     LOG_INFO("Syscall monitor initialized%s", "");
 
@@ -183,11 +208,19 @@ void syscall_monitor_cleanup(void) {
         free(process_contexts);
         process_contexts = NULL;
     }
+    
+    if (process_contexts_table) {
+        free(process_contexts_table);
+        process_contexts_table = NULL;
+    }
+    
     context_capacity = 0;
     context_count = 0;
+    process_context_capacity = 0;
+    process_context_count = 0;
     
     LOG_INFO("Syscall monitor cleaned up%s", "");
-
+    
     // Clean up directory monitoring
     cleanup_directory_monitoring();
 }
@@ -206,7 +239,6 @@ int syscall_monitor_attach(pid_t pid, EventHandler event_handler, void *user_dat
             LOG_ERROR("Failed to resize process contexts array%s", "");
             return -1;
         }
-        
         process_contexts = new_contexts;
         context_capacity = new_capacity;
     }
@@ -479,6 +511,7 @@ static void handle_execve(SyscallContext *ctx, struct user_regs_struct *regs, in
     
     // Fill process event data
     strncpy(event.data.process_event.image_path, ctx->path_buffer, sizeof(event.data.process_event.image_path) - 1);
+    event.data.process_event.image_path[sizeof(event.data.process_event.image_path) - 1] = '\0';
     
     // Try to get the parent process ID
     char proc_stat_path[64];
@@ -532,6 +565,7 @@ static void handle_open(SyscallContext *ctx, struct user_regs_struct *regs, int 
     
     // Fill file event data
     strncpy(event.data.file_event.path, ctx->path_buffer, sizeof(event.data.file_event.path) - 1);
+    event.data.file_event.path[sizeof(event.data.file_event.path) - 1] = '\0';
     event.data.file_event.access_flags = ctx->access_flags;
     event.data.file_event.entropy_before = ctx->entropy_before;
     
@@ -614,6 +648,7 @@ static void handle_rename(SyscallContext *ctx, struct user_regs_struct *regs, in
     
     // Fill file event data
     strncpy(event.data.file_event.path, oldpath, sizeof(event.data.file_event.path) - 1);
+    event.data.file_event.path[sizeof(event.data.file_event.path) - 1] = '\0';
     
     // Check for extension change (potential ransomware indicator)
     const char *old_ext = strrchr(oldpath, '.');
@@ -663,6 +698,7 @@ static void handle_chmod(SyscallContext *ctx, struct user_regs_struct *regs, int
     
     // Fill file event data
     strncpy(event.data.file_event.path, ctx->path_buffer, sizeof(event.data.file_event.path) - 1);
+    event.data.file_event.path[sizeof(event.data.file_event.path) - 1] = '\0';
     
     // Check for suspicious permission changes (e.g., removing read permissions)
     mode_t mode = (mode_t)ctx->args[1];
@@ -696,6 +732,7 @@ static void handle_unlink(SyscallContext *ctx, struct user_regs_struct *regs, in
     
     // Fill file event data
     strncpy(event.data.file_event.path, ctx->path_buffer, sizeof(event.data.file_event.path) - 1);
+    event.data.file_event.path[sizeof(event.data.file_event.path) - 1] = '\0';
     
     // Check if deleting backup files or shadow copies
     if (strstr(ctx->path_buffer, ".bak") || 
@@ -811,7 +848,6 @@ int syscall_monitor_start(void) {
     
     // This is where ptrace setup would occur for a full implementation
     // For beta/placeholder, we'll just log that it's ready
-    
     LOG_INFO("Syscall monitoring initialized and ready%s", "");
     return 0;
 }
@@ -884,8 +920,7 @@ static void cleanup_monitored_processes(void) {
 #pragma GCC diagnostic pop
 
 // Replace the entire handle_syscall function (around line 806)
-
-static void handle_syscall(int syscall_num, pid_t pid, const char* path, EventHandler handler, void* user_data) {
+static void __attribute__((unused)) handle_syscall(int syscall_num, pid_t pid, const char* path, EventHandler handler, void* user_data) {
     // Get process context
     ProcessContext* context = get_process_context(pid);
     if (!context) {
@@ -939,21 +974,18 @@ static void handle_syscall(int syscall_num, pid_t pid, const char* path, EventHa
                 LOG_DEBUG("Process %d opened file: %s", pid, path);
             }
             break;
-            
         case SYS_unlink:
         case SYS_unlinkat:
             event.type = EVENT_FILE_DELETE; // Use EVENT_FILE_DELETE instead
             event.score_impact = 1.0f;
             LOG_INFO("Process %d deleted file: %s", pid, path);
             break;
-            
         case SYS_rename:
         case SYS_renameat:
             event.type = EVENT_FILE_RENAME; // Use EVENT_FILE_RENAME instead
             event.score_impact = 0.5f;
             LOG_INFO("Process %d renamed file: %s", pid, path);
             break;
-            
         case SYS_chmod:
         case SYS_fchmod:
         case SYS_fchmodat:
@@ -961,7 +993,6 @@ static void handle_syscall(int syscall_num, pid_t pid, const char* path, EventHa
             event.score_impact = 0.3f;
             LOG_DEBUG("Process %d changed file permissions: %s", pid, path);
             break;
-            
         default:
             // For other syscalls, only log at debug level
             if (logger_state.current_level <= LOG_LEVEL_DEBUG) {
@@ -973,6 +1004,11 @@ static void handle_syscall(int syscall_num, pid_t pid, const char* path, EventHa
     // Fill in the file event data (using file_event instead of syscall_event)
     strncpy(event.data.file_event.path, path, sizeof(event.data.file_event.path) - 1);
     event.data.file_event.path[sizeof(event.data.file_event.path) - 1] = '\0';
+    
+    // Use calculate_string_hash in handle_syscall where appropriate
+    uint32_t path_hash = calculate_string_hash(path);
+    LOG_DEBUG("Handling syscall %d for process %d, path: %s (hash: %u)", 
+              syscall_num, pid, path, path_hash);
     
     // Send the event to the handler
     if (handler) {
@@ -1120,6 +1156,40 @@ void syscall_monitor_poll(EventHandler handler, void* user_data) {
     process_directory_events(handler, user_data);
     
     // Existing polling code...
+    // Process directory events first
+    process_directory_events(handler, user_data);
+    
+    // Then process any pending syscall events
+    for (int i = 0; i < 10; i++) {  // Process up to 10 events per poll
+        int result = syscall_monitor_process_event(handler, user_data);
+        if (result <= 0) {
+            break;  // No more events or error
+        }
+    }
+    
+    // Update process contexts
+    time_t now = time(NULL);
+    for (size_t i = 0; i < process_context_count; i++) {
+        ProcessContext* ctx = &process_contexts_table[i];
+        
+        // Check if process is still alive
+        char proc_path[64];
+        snprintf(proc_path, sizeof(proc_path), "/proc/%d/stat", ctx->pid);
+        if (access(proc_path, F_OK) != 0) {
+            // Process no longer exists, remove it
+            LOG_INFO("Process %d (%s) has terminated, removing from monitoring", 
+                    ctx->pid, ctx->process_name);
+            syscall_monitor_remove_process(ctx->pid);
+            i--;  // Adjust index since we removed an element
+            continue;
+        }
+        
+        // Update last activity timestamp for processes with recent activity
+        if (now - ctx->last_activity > 300) {  // 5 minutes of inactivity
+            LOG_DEBUG("Process %d (%s) has been inactive for %ld seconds", 
+                     ctx->pid, ctx->process_name, now - ctx->last_activity);
+        }
+    }
 }
 
 // Cleanup directory monitoring
@@ -1137,4 +1207,85 @@ static void cleanup_directory_monitoring(void) {
         LOG_INFO("Directory monitoring cleaned up for: %s", dir_monitor.path);
         dir_monitor.initialized = 0;
     }
+}
+
+// Add implementation for adding and removing processes from monitoring
+
+// Add a process to the monitoring system
+int syscall_monitor_add_process(pid_t pid) {
+    // Check if we need to grow the process contexts table
+    if (process_context_count >= process_context_capacity) {
+        size_t new_capacity = process_context_capacity * 2;
+        ProcessContext *new_table = realloc(process_contexts_table, 
+                                           new_capacity * sizeof(ProcessContext));
+        if (!new_table) {
+            LOG_ERROR("Failed to resize process context table%s", "");
+            return -1;
+        }
+        
+        process_contexts_table = new_table;
+        process_context_capacity = new_capacity;
+    }
+    
+    // Check if process is already monitored
+    for (size_t i = 0; i < process_context_count; i++) {
+        if (process_contexts_table[i].pid == pid) {
+            LOG_DEBUG("Process %d already being monitored", pid);
+            return 0;
+        }
+    }
+    
+    // Get process name
+    char process_name[256] = {0};
+    char proc_path[64];
+    snprintf(proc_path, sizeof(proc_path), "/proc/%d/comm", pid);
+    
+    FILE* f = fopen(proc_path, "r");
+    if (f) {
+        if (fgets(process_name, sizeof(process_name), f)) {
+            // Remove trailing newline
+            size_t len = strlen(process_name);
+            if (len > 0 && process_name[len-1] == '\n') {
+                process_name[len-1] = '\0';
+            }
+        }
+        fclose(f);
+    }
+    
+    // Initialize the new process context
+    ProcessContext* ctx = &process_contexts_table[process_context_count++];
+    memset(ctx, 0, sizeof(ProcessContext));
+    ctx->pid = pid;
+    strncpy(ctx->process_name, process_name, sizeof(ctx->process_name) - 1);
+    ctx->monitoring_level = MONITORING_LEVEL_MEDIUM; // Default level
+    ctx->last_activity = time(NULL);
+    
+    LOG_INFO("Added process %d (%s) to monitoring", pid, process_name);
+    
+    // Attach to process for syscall monitoring if needed
+    return syscall_monitor_attach(pid, NULL, NULL);
+}
+
+// Remove a process from the monitoring system
+void syscall_monitor_remove_process(pid_t pid) {
+    // Find the process in the context table
+    for (size_t i = 0; i < process_context_count; i++) {
+        if (process_contexts_table[i].pid == pid) {
+            // Remove by shifting remaining elements
+            if (i < process_context_count - 1) {
+                memmove(&process_contexts_table[i], 
+                       &process_contexts_table[i + 1],
+                       (process_context_count - i - 1) * sizeof(ProcessContext));
+            }
+            process_context_count--;
+            
+            LOG_INFO("Removed process %d from monitoring", pid);
+            
+            // Detach from syscall monitoring
+            syscall_monitor_detach(pid);
+            return;
+        }
+    }
+    
+    LOG_DEBUG("Process %d not found in monitoring table", pid);
 }
