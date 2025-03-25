@@ -89,6 +89,33 @@ typedef struct {
     float suspicion_score;
 } ProcessInfo;
 
+// Process monitoring level
+typedef enum {
+    MONITORING_LEVEL_NONE = 0,
+    MONITORING_LEVEL_LOW,
+    MONITORING_LEVEL_NORMAL,
+    MONITORING_LEVEL_HIGH
+} MonitoringLevel;
+
+// Process context for advanced monitoring
+typedef struct ProcessContext {
+    pid_t pid;
+    char command[256];
+    char path[MAX_PATH_LENGTH];
+    MonitoringLevel monitoring_level;
+    time_t creation_time;
+    time_t last_update_time;
+    int suspicious_score;
+    unsigned int flags;
+} ProcessContext;
+
+// Maximum number of process contexts to maintain
+#define MAX_PROCESS_CONTEXTS 256
+
+// Global process context storage
+static ProcessContext* process_contexts[MAX_PROCESS_CONTEXTS];
+static int process_context_count = 0;
+
 // Global state
 static ProcessInfo monitored_processes[MAX_MONITORED_PROCESSES];
 static int process_count = 0;
@@ -118,6 +145,17 @@ static void add_child_process(ProcessInfo* parent, pid_t child_pid, const char* 
 static int is_process_alive(pid_t pid);
 static void remove_old_children(ProcessInfo* proc);
 
+// Forward declarations for process context management
+static ProcessContext* create_process_context(pid_t pid);
+static void free_process_context(ProcessContext* context);
+static void add_process_context(ProcessContext* context);
+static ProcessContext* get_process_context(pid_t pid);
+static int is_system_utility(const char* process_name, const char* path);
+static int is_numeric(const char* str);
+static int get_process_info(pid_t pid, char* exe_path, size_t exe_path_size,
+                          char* cmdline, size_t cmdline_size,
+                          char* process_name, size_t process_name_size);
+
 // Initialize the process monitor
 int process_monitor_init(EventHandler handler, void* user_data) {
     memset(monitored_processes, 0, sizeof(monitored_processes));
@@ -125,6 +163,10 @@ int process_monitor_init(EventHandler handler, void* user_data) {
     last_poll_time = time(NULL);
     event_callback = handler;
     event_callback_data = user_data;
+    
+    // Initialize process context array
+    memset(process_contexts, 0, sizeof(process_contexts));
+    process_context_count = 0;
     
     // Get the current user info
     current_user_uid = getuid();
@@ -139,7 +181,18 @@ int process_monitor_init(EventHandler handler, void* user_data) {
 
 // Clean up resources
 void process_monitor_cleanup(void) {
+    // Free all process contexts
+    for (int i = 0; i < process_context_count; i++) {
+        if (process_contexts[i]) {
+            free_process_context(process_contexts[i]);
+            process_contexts[i] = NULL;
+        }
+    }
+    process_context_count = 0;
+    
+    // Reset process info array
     process_count = 0;
+    
     LOG_INFO("Process monitor cleaned up%s", "");
 }
 
@@ -989,8 +1042,212 @@ void process_monitor_remove_process(pid_t pid) {
     remove_process_info(pid);
 }
 
+// Create a new process context
+static ProcessContext* create_process_context(pid_t pid) {
+    ProcessContext* context = (ProcessContext*)malloc(sizeof(ProcessContext));
+    if (!context) {
+        LOG_ERROR("Failed to allocate memory for process context%s", "");
+        return NULL;
+    }
+    
+    // Initialize with default values
+    memset(context, 0, sizeof(ProcessContext));
+    context->pid = pid;
+    context->creation_time = time(NULL);
+    context->last_update_time = time(NULL);
+    context->monitoring_level = MONITORING_LEVEL_NORMAL;
+    
+    return context;
+}
+
+// Free a process context
+static void free_process_context(ProcessContext* context) {
+    if (context) {
+        free(context);
+    }
+}
+
+// Add a process context to the global list
+static void add_process_context(ProcessContext* context) {
+    if (!context) {
+        return;
+    }
+    
+    // Check if we already have this process
+    for (int i = 0; i < process_context_count; i++) {
+        if (process_contexts[i] && process_contexts[i]->pid == context->pid) {
+            // Replace the existing context
+            free_process_context(process_contexts[i]);
+            process_contexts[i] = context;
+            return;
+        }
+    }
+    
+    // Add new context if we have space
+    if (process_context_count < MAX_PROCESS_CONTEXTS) {
+        process_contexts[process_context_count++] = context;
+    } else {
+        // Find the oldest context to replace
+        int oldest_idx = 0;
+        time_t oldest_time = time(NULL);
+        
+        for (int i = 0; i < MAX_PROCESS_CONTEXTS; i++) {
+            if (process_contexts[i] && process_contexts[i]->last_update_time < oldest_time) {
+                oldest_time = process_contexts[i]->last_update_time;
+                oldest_idx = i;
+            }
+        }
+        
+        // Replace the oldest context
+        free_process_context(process_contexts[oldest_idx]);
+        process_contexts[oldest_idx] = context;
+    }
+}
+
+// Get a process context from the global list
+static ProcessContext* get_process_context(pid_t pid) {
+    for (int i = 0; i < process_context_count; i++) {
+        if (process_contexts[i] && process_contexts[i]->pid == pid) {
+            return process_contexts[i];
+        }
+    }
+    return NULL;
+}
+
+// Check if a string is numeric (contains only digits)
+static int is_numeric(const char* str) {
+    if (!str || !*str) {
+        return 0;
+    }
+    
+    while (*str) {
+        if (!isdigit((unsigned char)*str)) {
+            return 0;
+        }
+        str++;
+    }
+    
+    return 1;
+}
+
+// Check if a process is a common system utility
+static int is_system_utility(const char* process_name, const char* path) {
+    if (!process_name || !path) {
+        return 0;
+    }
+    
+    // Common system utilities that shouldn't need detailed monitoring
+    const char* system_names[] = {
+        "bash", "sh", "dash", "zsh", "systemd", "init", "kthreadd",
+        "kworker", "ksoftirqd", "migration", "sshd", "rcu_", "cron",
+        "rsyslogd", "dbus", "avahi", "cups", "NetworkManager", "polkit",
+        "apache", "nginx", "mysqld", "dhclient", "ntpd", "snapd", "upstart",
+        "udev", "login", "gnome", "pulseaudio", "X", "xorg", "Xorg", 
+        "apt", "dpkg", "rpm", "yum", "dnf", "pacman", NULL
+    };
+    
+    // Common system directories
+    const char* system_paths[] = {
+        "/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/usr/local/bin/",
+        "/usr/local/sbin/", "/lib/", "/lib64/", "/usr/lib/", "/usr/lib64/",
+        "/opt/", "/snap/", NULL
+    };
+    
+    // Check process name against common system utilities
+    for (int i = 0; system_names[i] != NULL; i++) {
+        if (strncmp(process_name, system_names[i], strlen(system_names[i])) == 0) {
+            return 1;
+        }
+    }
+    
+    // Check if the executable is in a system directory
+    for (int i = 0; system_paths[i] != NULL; i++) {
+        if (strncmp(path, system_paths[i], strlen(system_paths[i])) == 0) {
+            return 1;
+        }
+    }
+    
+    return 0;
+}
+
+// Get process information from the /proc filesystem
+static int get_process_info(pid_t pid, char* exe_path, size_t exe_path_size,
+                          char* cmdline, size_t cmdline_size,
+                          char* process_name, size_t process_name_size) {
+    if (pid <= 0 || !exe_path || !cmdline || !process_name) {
+        return -1;
+    }
+    
+    // Get executable path
+    char proc_exe[64];
+    snprintf(proc_exe, sizeof(proc_exe), "/proc/%d/exe", pid);
+    ssize_t len = readlink(proc_exe, exe_path, exe_path_size - 1);
+    if (len > 0) {
+        exe_path[len] = '\0';
+    } else {
+        exe_path[0] = '\0';
+    }
+    
+    // Get command line
+    char proc_cmdline[64];
+    snprintf(proc_cmdline, sizeof(proc_cmdline), "/proc/%d/cmdline", pid);
+    FILE* f_cmdline = fopen(proc_cmdline, "r");
+    if (f_cmdline) {
+        size_t read = fread(cmdline, 1, cmdline_size - 1, f_cmdline);
+        if (read > 0) {
+            cmdline[read] = '\0';
+            
+            // Replace null bytes with spaces for display
+            for (size_t i = 0; i < read; i++) {
+                if (cmdline[i] == '\0' && i < read - 1) {
+                    cmdline[i] = ' ';
+                }
+            }
+        } else {
+            cmdline[0] = '\0';
+        }
+        fclose(f_cmdline);
+    } else {
+        cmdline[0] = '\0';
+    }
+    
+    // Get process name
+    char proc_comm[64];
+    snprintf(proc_comm, sizeof(proc_comm), "/proc/%d/comm", pid);
+    FILE* f_comm = fopen(proc_comm, "r");
+    if (f_comm) {
+        if (fgets(process_name, process_name_size, f_comm)) {
+            // Remove trailing newline
+            size_t name_len = strlen(process_name);
+            if (name_len > 0 && process_name[name_len - 1] == '\n') {
+                process_name[name_len - 1] = '\0';
+            }
+        } else {
+            process_name[0] = '\0';
+        }
+        fclose(f_comm);
+    } else {
+        process_name[0] = '\0';
+    }
+    
+    // If we couldn't get the name from comm, extract it from the path
+    if (process_name[0] == '\0' && exe_path[0] != '\0') {
+        const char* last_slash = strrchr(exe_path, '/');
+        if (last_slash) {
+            strncpy(process_name, last_slash + 1, process_name_size - 1);
+            process_name[process_name_size - 1] = '\0';
+        }
+    }
+    
+    return 0;
+}
+
 // Modify add_process_to_monitoring to reduce verbosity
 static int add_process_to_monitoring(pid_t pid, EventHandler handler, void* user_data) {
+    // Mark unused parameters
+    (void)handler;     // Explicitly mark parameter as unused
+    (void)user_data;   // Explicitly mark parameter as unused
+
     // Static counter to limit startup log spam
     static int process_count = 0;
     static time_t last_process_log = 0;
@@ -1048,7 +1305,7 @@ static int add_process_to_monitoring(pid_t pid, EventHandler handler, void* user
 }
 
 // Update scan_existing_processes to report summary instead of each process
-static int scan_existing_processes(EventHandler handler, void* user_data) {
+static int __attribute__((unused)) scan_existing_processes(EventHandler handler, void* user_data) {
     DIR* proc_dir = opendir("/proc");
     if (!proc_dir) {
         LOG_ERROR("Failed to open /proc directory: %s", strerror(errno));
