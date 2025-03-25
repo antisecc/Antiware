@@ -7,9 +7,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <getopt.h>  // Add this for getopt_long
+#include <getopt.h>
 
-#include "include/antiransom.h"
+#include "include/antiransom.h"  // This now contains GlobalArgs
 #include "common/logger.h"
 #include "common/config.h"
 
@@ -28,14 +28,6 @@
 #else
     #define PLATFORM_UNKNOWN 1
 #endif
-
-// Global configuration structure to pass to platform-specific code
-typedef struct {
-    int daemon_mode;
-    int verbose_mode;
-    char config_path[512];
-    char watch_directory[512];
-} GlobalArgs;
 
 // Forward declarations for platform-specific entry points with updated signatures
 #ifdef PLATFORM_LINUX

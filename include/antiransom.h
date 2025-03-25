@@ -153,4 +153,15 @@ typedef struct {
     int system_changes;
 } BehaviorFlags;
 
+/**
+ * Global command-line arguments structure
+ * Used to pass arguments from main to platform-specific implementations
+ */
+typedef struct {
+    int daemon_mode;         // Run as daemon
+    int verbose_mode;        // Enable verbose logging
+    char config_path[512];   // Path to config file
+    char watch_directory[512]; // Directory to monitor
+} GlobalArgs;
+
 #endif /* ANTIRANSOM_H */

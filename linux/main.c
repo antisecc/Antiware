@@ -13,7 +13,7 @@
 #include <pwd.h>
 #include <time.h>
 
-#include "../include/antiransom.h"
+#include "../include/antiransom.h"  // This now contains GlobalArgs
 #include "../include/events.h"
 #include "../common/logger.h"
 #include "../common/config.h"
@@ -74,6 +74,10 @@ static void initialize_logging(void);
 // Remove redundant argument parsing
 
 int linux_main(int argc, char* argv[], const GlobalArgs* global_args) {
+    // Suppress unused parameter warnings
+    (void)argc;
+    (void)argv;
+    
     // Initialize configuration
     Configuration config;
     config_init(&config);
