@@ -162,6 +162,10 @@ static int init_directory_monitoring(const char* directory);
 static void process_directory_events(EventHandler handler, void* user_data);
 static void cleanup_directory_monitoring(void);
 
+// Add these process management forward declarations
+int syscall_monitor_add_process(pid_t pid);
+void syscall_monitor_remove_process(pid_t pid);
+
 // Initialize the syscall monitor
 int syscall_monitor_init(const Configuration* config, EventHandler handler, void* user_data) {
     // Mark unused parameters
@@ -1153,10 +1157,6 @@ static void process_directory_events(EventHandler handler, void* user_data) {
 // Update syscall_monitor_poll to process directory events
 void syscall_monitor_poll(EventHandler handler, void* user_data) {
     // Process directory events
-    process_directory_events(handler, user_data);
-    
-    // Existing polling code...
-    // Process directory events first
     process_directory_events(handler, user_data);
     
     // Then process any pending syscall events
