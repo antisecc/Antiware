@@ -73,6 +73,24 @@ typedef struct {
     unsigned char last_code_checksums[MAX_MEMORY_REGIONS][16];
 } ProcessMemory;
 
+// Process monitoring level
+typedef enum {
+    MONITORING_LEVEL_NONE = 0,
+    MONITORING_LEVEL_LOW,
+    MONITORING_LEVEL_MEDIUM,
+    MONITORING_LEVEL_HIGH
+} MonitoringLevel;
+
+// Process context structure
+typedef struct ProcessContext {
+    pid_t pid;
+    char command[256];
+    MonitoringLevel monitoring_level;
+    unsigned int flags;
+    time_t last_activity;
+    // Add other fields as needed
+} ProcessContext;
+
 // Global state
 static ProcessMemory monitored_processes[MAX_MONITORED_PROCESSES];
 static int process_count = 0;
@@ -93,6 +111,11 @@ static int is_executable(const char* perms);
 static int is_writeable(const char* perms);
 static void generate_memory_event(pid_t pid, EventType type, const char* details, float score_impact);
 static unsigned long get_process_memory_usage(pid_t pid);
+static ProcessContext* get_process_context(pid_t pid);
+static int is_interesting_file(const char* pathname);
+static void analyze_memory_region(pid_t pid, unsigned long start, unsigned long end, 
+                               const char* perms, const char* pathname, 
+                               EventHandler handler, void* user_data);
 
 // Initialize the memory monitor
 int memory_monitor_init(EventHandler handler, void* user_data) {
@@ -182,7 +205,7 @@ int memory_monitor_remove_process(pid_t pid) {
 }
 
 // Poll all monitored processes for memory changes
-void memory_monitor_poll(void) {
+int memory_monitor_poll(void) {
     time_t now = time(NULL);
     
     for (int i = 0; i < process_count; i++) {
@@ -213,6 +236,8 @@ void memory_monitor_poll(void) {
         // Update timestamp
         process->last_updated = now;
     }
+    
+    return 0;  // Return success
 }
 
 // Update memory information for a process
@@ -642,8 +667,89 @@ int memory_monitor_get_stats(pid_t pid, MemoryStats* stats) {
     return 0;
 }
 
+// Get the process context from the monitoring system
+static ProcessContext* get_process_context(pid_t pid) {
+    // This is a simplistic implementation - in a real system, you'd have
+    // a shared process context database across all monitoring components
+    static ProcessContext dummy_context;
+    
+    // Initialize the dummy context with reasonable defaults
+    dummy_context.pid = pid;
+    snprintf(dummy_context.command, sizeof(dummy_context.command), "process-%d", pid);
+    dummy_context.monitoring_level = MONITORING_LEVEL_MEDIUM;
+    dummy_context.flags = 0;
+    dummy_context.last_activity = time(NULL);
+    
+    return &dummy_context;
+}
+
+// Check if a file is interesting for memory monitoring
+static int is_interesting_file(const char* pathname) {
+    if (!pathname || pathname[0] == '\0') {
+        return 0;  // Anonymous mapping, not interesting by default
+    }
+    
+    // Look for common libraries that might be interesting
+    const char* interesting_patterns[] = {
+        "libc", "libcrypto", "libssl", "libsystem", "libz",
+        "python", "java", "dotnet", ".so", ".dll", ".exe",
+        NULL
+    };
+    
+    for (int i = 0; interesting_patterns[i] != NULL; i++) {
+        if (strstr(pathname, interesting_patterns[i])) {
+            return 1;
+        }
+    }
+    
+    return 0;
+}
+
+// Analyze a specific memory region for suspicious content/behavior
+static void analyze_memory_region(pid_t pid, unsigned long start, unsigned long end, 
+                              const char* perms, const char* pathname, 
+                              EventHandler handler, void* user_data) {
+    // Calculate region size
+    unsigned long size = end - start;
+    
+    // Check for suspicious RWX permissions
+    if (strcmp(perms, "rwx") == 0) {
+        LOG_DEBUG("RWX memory region found at %lx-%lx (%lu KB) in process %d: %s", 
+                 start, end, size / 1024, pid, pathname);
+        
+        // Generate an event for RWX memory
+        if (handler) {
+            Event event;
+            memset(&event, 0, sizeof(event));
+            
+            event.type = EVENT_MEMORY_RWX;
+            event.process_id = pid;
+            event.timestamp = time(NULL);
+            event.score_impact = 8.0f;  // RWX memory is quite suspicious
+            
+            // Prepare details
+            char details[256];
+            snprintf(details, sizeof(details), 
+                   "RWX memory region: %lx-%lx (%lu KB) %s", 
+                   start, end, size / 1024, pathname[0] ? pathname : "anonymous mapping");
+            
+            strncpy(event.data.memory_event.details, details, 
+                   sizeof(event.data.memory_event.details) - 1);
+            
+            // Call the event handler
+            handler(&event, user_data);
+        }
+    }
+    
+    // Additional analysis would go here:
+    // - Check for shellcode signatures
+    // - Check for encrypted content
+    // - Check for suspicious strings
+    // - etc.
+}
+
 // Modify scan_memory_regions to reduce log verbosity
-static void scan_memory_regions(pid_t pid, EventHandler handler, void* user_data) {
+static void __attribute__((unused)) scan_memory_regions(pid_t pid, EventHandler handler, void* user_data) {
     // Get process context
     ProcessContext* context = get_process_context(pid);
     if (!context) {
