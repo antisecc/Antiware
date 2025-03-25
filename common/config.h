@@ -4,24 +4,7 @@
 #include "../include/antiransom.h"
 #include <stdbool.h>
 
-typedef struct {
-    OperationMode mode;
-    bool verbose_logging;
-    uint32_t scan_interval_ms;
-    float threshold_low;
-    float threshold_medium;
-    float threshold_high;
-    float threshold_critical;
-    bool auto_respond;
-    char whitelist_path[512];
-    char watch_directory[512];  // Directory to monitor for suspicious activity
-    
-    // Other existing fields...
-    DetectionThresholds thresholds;
-    MonitorSettings monitor_settings;
-    ResponseSettings response_settings;
-    LogSettings log_settings;
-} Configuration;
+// The Configuration struct is now defined in antiransom.h
 
 /* Initialize configuration with default values */
 void config_init(Configuration* config);

@@ -111,6 +111,7 @@ typedef struct {
     float threshold_critical;
     bool auto_respond;
     char whitelist_path[512];
+    char watch_directory[512];  // Directory to monitor for suspicious activity
     
     // Enhanced configuration structure
     DetectionThresholds thresholds;  // Structured thresholds
