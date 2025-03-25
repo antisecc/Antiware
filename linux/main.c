@@ -59,24 +59,35 @@ static pthread_mutex_t poll_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t poll_thread;
 
 // Function prototypes
-static void parse_arguments(int argc, char* argv[]);
+static void __attribute__((unused)) parse_arguments(int argc, char* argv[]);
 static void print_usage(const char* program_name);
 static void signal_handler(int signal);
-static void setup_signal_handlers(void);
-static void initialize_components(void);
-static void cleanup_components(void);
-static void* polling_thread_func(void* arg);
+static void __attribute__((unused)) setup_signal_handlers(void);
+static void __attribute__((unused)) initialize_components(void);
+static void __attribute__((unused)) cleanup_components(void);
+static void* __attribute__((unused)) polling_thread_func(void* arg);
 static void event_callback(const Event* event, void* user_data);
-static int daemonize(void);
-static void scan_running_processes(void);
-static void initialize_logging(void);
+static int __attribute__((unused)) daemonize(void);
+static void __attribute__((unused)) scan_running_processes(void);
+static void __attribute__((unused)) initialize_logging(void);
 
 // Remove redundant argument parsing
 
 int linux_main(int argc, char* argv[], const GlobalArgs* global_args) {
-    // Suppress unused parameter warnings
+    // Suppress unused parameter and function warnings
     (void)argc;
     (void)argv;
+    
+    // Cast unused functions to void to suppress warnings
+    (void)parse_arguments;
+    (void)setup_signal_handlers;
+    (void)initialize_components;
+    (void)cleanup_components;
+    (void)polling_thread_func;
+    (void)daemonize;
+    (void)scan_running_processes;
+    (void)initialize_logging;
+    (void)poll_thread;  // For the unused variable
     
     // Initialize configuration
     Configuration config;
@@ -106,8 +117,47 @@ int linux_main(int argc, char* argv[], const GlobalArgs* global_args) {
     LOG_INFO("Initializing Linux monitoring with %s mode", 
             config.mode == MODE_DAEMON ? "daemon" : "standalone");
     
-    // Rest of initialization...
+    // Initialize logging based on configuration
+    initialize_logging();
     
+    // Set up signal handlers for clean shutdown
+    setup_signal_handlers();
+    
+    // Initialize all monitoring components
+    initialize_components();
+    
+    // If we're running in daemon mode
+    if (config.mode == MODE_DAEMON) {
+        if (daemonize() != 0) {
+            LOG_ERROR("Failed to daemonize process: %s", strerror(errno));
+            cleanup_components();
+            return EXIT_FAILURE;
+        }
+    }
+    
+    // Scan for existing processes to monitor
+    scan_running_processes();
+    
+    // Set running flag
+    running = 1;
+    
+    // Create polling thread
+    if (pthread_create(&poll_thread, NULL, polling_thread_func, NULL) != 0) {
+        LOG_ERROR("Failed to create polling thread: %s", strerror(errno));
+        cleanup_components();
+        return EXIT_FAILURE;
+    }
+    
+    // Main loop (simplified for this example)
+    while (running) {
+        sleep(1);
+    }
+    
+    // Clean up when exiting
+    pthread_join(poll_thread, NULL);
+    cleanup_components();
+    
+    LOG_INFO("Linux monitoring terminated normally%s", "");
     return 0;
 }
 
