@@ -28,6 +28,13 @@ extern void syscall_monitor_stop(void);
 extern int process_monitor_init(EventHandler handler, void* user_data);
 extern void process_monitor_cleanup(void);
 extern void process_monitor_poll(void);
+extern int process_monitor_add_process(pid_t pid);
+extern ProcessInfo* process_monitor_get_process_info(pid_t pid);
+extern void process_monitor_process_suspicious(pid_t pid, const char* details);
+extern void process_monitor_memory_suspicious(pid_t pid, const char* details);
+extern void process_monitor_syscall_suspicious(pid_t pid, const char* details);
+extern void process_monitor_analyze_relationships(void);
+extern void process_monitor_apply_risk_decay(void);
 
 extern int memory_monitor_init(EventHandler handler, void* user_data);
 extern void memory_monitor_cleanup(void);
@@ -316,6 +323,9 @@ static void* polling_thread_func(void* arg) {
     sleep_time.tv_sec = 0;
     sleep_time.tv_nsec = 100 * 1000 * 1000; // 100ms
     
+    // Track when we last performed deep analysis
+    time_t last_deep_analysis = 0;
+    
     while (running) {
         pthread_mutex_lock(&poll_mutex);
         
@@ -323,6 +333,16 @@ static void* polling_thread_func(void* arg) {
         process_monitor_poll();
         memory_monitor_poll();
         detection_poll();
+        
+        // ENHANCEMENT: Periodically perform deep analysis and risk assessment
+        time_t now = time(NULL);
+        if (now - last_deep_analysis > 60) { // Every minute
+            // Perform deep analysis functions in process_monitor.c
+            process_monitor_analyze_relationships();
+            process_monitor_apply_risk_decay();
+            
+            last_deep_analysis = now;
+        }
         
         pthread_mutex_unlock(&poll_mutex);
         
@@ -342,16 +362,30 @@ static void event_callback(const Event* event, void* user_data) {
     
     // For process events that indicate a new process, add to monitoring
     if (event->type == EVENT_PROCESS_CREATE) {
-        pid_t child_pid = event->data.process_event.parent_pid;
+        pid_t child_pid = event->data.process_event.child_pid;
         
-        // Add to detection and memory monitoring
+        // Add to all monitoring components
         detection_add_process(child_pid);
         memory_monitor_add_process(child_pid);
+        process_monitor_add_process(child_pid);
+        
+        // ENHANCEMENT: Setup cross-monitor communication
+        // If parent is suspicious, notify process monitor about the child
+        pid_t parent_pid = event->process_id;
+        ProcessInfo* parent = process_monitor_get_process_info(parent_pid);
+        if (parent && parent->suspicion_score > 40.0f) {
+            char details[256];
+            snprintf(details, sizeof(details), 
+                     "Child of suspicious parent (score: %.1f)", 
+                     parent->suspicion_score);
+            process_monitor_process_suspicious(child_pid, details);
+        }
     }
     
     // For process exit events, remove from monitoring
     if (event->type == EVENT_PROCESS_TERMINATE) {
         detection_remove_process(event->process_id);
+        process_monitor_remove_process(event->process_id);
     }
     
     // In verbose mode, log all events
@@ -381,7 +415,9 @@ static void event_callback(const Event* event, void* user_data) {
             case EVENT_PROCESS_CREATE:
                 LOG_DEBUG("[%s] Process %d created child process: %d (%s)", 
                          timestamp, event->process_id, 
-                         event->data.process_event.parent_pid, event->data.process_event.image_path);
+                         event->data.process_event.child_pid, 
+                         event->data.process_event.image_path ? 
+                         event->data.process_event.image_path : "unknown");
                 break;
                 
             case EVENT_PROCESS_TERMINATE:
@@ -396,9 +432,43 @@ static void event_callback(const Event* event, void* user_data) {
                 break;
                 
             case EVENT_PROCESS_SUSPICIOUS:
+                LOG_WARNING("[%s] Process %d suspicious behavior: %s", 
+                         timestamp, event->process_id, event->data.process_event.details);
+                break;
+                
             case EVENT_PROCESS_BEHAVIOR:
+                LOG_DEBUG("[%s] Process %d behavior: %s", 
+                         timestamp, event->process_id, event->data.process_event.details);
+                break;
+                
             case EVENT_PROCESS_PRIVESC:
-                LOG_DEBUG("[%s] Process behavior event %d: %s", 
+                LOG_WARNING("[%s] Process %d privilege escalation: %s", 
+                         timestamp, event->process_id, event->data.process_event.details);
+                break;
+                
+            // ENHANCEMENT: Add handlers for new event types
+            case EVENT_PROCESS_CORRELATION:
+                LOG_WARNING("[%s] Process %d correlation detected: %s", 
+                         timestamp, event->process_id, event->data.process_event.details);
+                break;
+                
+            case EVENT_PROCESS_LINEAGE:
+                LOG_INFO("[%s] Process %d lineage event: %s", 
+                         timestamp, event->process_id, event->data.process_event.details);
+                break;
+                
+            case EVENT_PROCESS_OBFUSCATION:
+                LOG_WARNING("[%s] Process %d command obfuscation: %s", 
+                         timestamp, event->process_id, event->data.process_event.details);
+                break;
+                
+            case EVENT_MEMORY_SUSPICIOUS:
+                LOG_WARNING("[%s] Process %d suspicious memory activity: %s", 
+                         timestamp, event->process_id, event->data.process_event.details);
+                break;
+                
+            case EVENT_SYSCALL_SUSPICIOUS:
+                LOG_WARNING("[%s] Process %d suspicious syscall: %s", 
                          timestamp, event->process_id, event->data.process_event.details);
                 break;
                 
@@ -478,6 +548,8 @@ static void scan_running_processes(void) {
     
     struct dirent* entry;
     int processes_added = 0;
+    int system_processes = 0;
+    int user_processes = 0;
     
     while ((entry = readdir(proc_dir)) != NULL) {
         // Only look at directories with numeric names (PIDs)
@@ -505,20 +577,42 @@ static void scan_running_processes(void) {
             continue;
         }
         
-        // Add process to monitoring
-        if (detection_add_process(pid) == 0) {
-            if (memory_monitor_add_process(pid) == 0) {
-                processes_added++;
-                
-                if (verbose_mode && processes_added % 10 == 0) {
-                    LOG_DEBUG("Added %d processes to monitoring...", processes_added);
+        // Read executable path to determine process type
+        char exe_path[PATH_MAX];
+        char proc_exe[64];
+        snprintf(proc_exe, sizeof(proc_exe), "/proc/%d/exe", pid);
+        ssize_t len = readlink(proc_exe, exe_path, sizeof(exe_path) - 1);
+        if (len > 0) {
+            exe_path[len] = '\0';
+            
+            // Classify as system or user process
+            if (strncmp(exe_path, "/usr/bin/", 9) == 0 || 
+                strncmp(exe_path, "/bin/", 5) == 0 || 
+                strncmp(exe_path, "/sbin/", 6) == 0 || 
+                strncmp(exe_path, "/usr/sbin/", 10) == 0) {
+                system_processes++;
+            } else {
+                user_processes++;
+            }
+        }
+        
+        // Add process to all monitoring components
+        if (process_monitor_add_process(pid) == 0) {
+            if (detection_add_process(pid) == 0) {
+                if (memory_monitor_add_process(pid) == 0) {
+                    processes_added++;
+                    
+                    if (verbose_mode && processes_added % 10 == 0) {
+                        LOG_DEBUG("Added %d processes to monitoring...", processes_added);
+                    }
                 }
             }
         }
     }
     
     closedir(proc_dir);
-    LOG_INFO("Added %d processes to monitoring", processes_added);
+    LOG_INFO("Added %d processes to monitoring (%d system, %d user)", 
+             processes_added, system_processes, user_processes);
 }
 
 // Initialize logging based on configuration

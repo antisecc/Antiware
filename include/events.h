@@ -37,12 +37,19 @@ typedef enum {
     EVENT_PROCESS_SUSPICIOUS,   // Suspicious process behavior
     EVENT_PROCESS_BEHAVIOR,     // General process behavior
     EVENT_PROCESS_PRIVESC,      // Privilege escalation attempts
+    EVENT_PROCESS_CORRELATION,  // Correlated suspicious process activity
+    EVENT_PROCESS_LINEAGE,      // Process ancestry/lineage suspicious
+    EVENT_PROCESS_OBFUSCATION,  // Command line obfuscation detected
     
     // Additional memory-related events
     EVENT_MEMORY_RWX,           // Executable and writable memory detected
     EVENT_MEMORY_PATTERN,       // Suspicious memory allocation pattern
     EVENT_MEMORY_USAGE,         // Unusual memory usage
     EVENT_MEMORY_MODIFIED,      // Modification of executable memory
+    EVENT_MEMORY_SUSPICIOUS,    // Suspicious memory activity detected
+    
+    // Syscall-related events
+    EVENT_SYSCALL_SUSPICIOUS,   // Suspicious syscall patterns
     
     // Alert events
     EVENT_DETECTION_ALERT       // Security detection alerts
