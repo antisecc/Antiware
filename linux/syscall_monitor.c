@@ -37,14 +37,76 @@ typedef enum {
     MONITORING_LEVEL_HIGH
 } MonitoringLevel;
 
-// Process context structure
+// Maximum number of syscalls to store in history per process
+#define SYSCALL_HISTORY_SIZE 50
+
+// Syscall intent classification
+typedef enum {
+    SYSCALL_INTENT_UNKNOWN = 0,
+    SYSCALL_INTENT_FILE_READ,
+    SYSCALL_INTENT_FILE_WRITE,
+    SYSCALL_INTENT_FILE_CREATE,
+    SYSCALL_INTENT_FILE_DELETE,
+    SYSCALL_INTENT_FILE_RENAME,
+    SYSCALL_INTENT_PERMISSION_CHANGE,
+    SYSCALL_INTENT_PROCESS_CREATE,
+    SYSCALL_INTENT_PROCESS_TERMINATE,
+    SYSCALL_INTENT_NETWORK_ACCESS,
+    SYSCALL_INTENT_MEMORY_ALLOCATION
+} SyscallIntent;
+
+// Individual syscall record
+typedef struct {
+    long syscall_number;
+    time_t timestamp;
+    SyscallIntent intent;
+    unsigned long args[6];
+    long return_value;
+    char path[PATH_MAX];
+    uint32_t path_hash;
+    uint32_t flags;
+} SyscallRecord;
+
+// Circular buffer for syscall history
+typedef struct {
+    SyscallRecord records[SYSCALL_HISTORY_SIZE];
+    int head;  // Position to insert next record
+    int count; // Number of records currently stored
+} SyscallHistory;
+
+// Enhanced ProcessContext structure
 typedef struct ProcessContext {
     pid_t pid;
     char process_name[256];
     MonitoringLevel monitoring_level;
     unsigned int flags;
     time_t last_activity;
-    // Add other fields as needed
+    
+    // Syscall tracking data
+    SyscallHistory syscall_history;
+    unsigned int suspicious_sequences;
+    time_t last_suspicious_sequence;
+    float sequence_risk_score;
+    
+    // Pattern statistics
+    unsigned int file_ops_count;
+    unsigned int file_rename_count;
+    unsigned int permission_change_count;
+    unsigned int file_deletion_count;
+    time_t pattern_start_time;
+    
+    // File type tracking
+    unsigned int document_access_count;
+    unsigned int image_access_count;
+    unsigned int archive_access_count;
+    unsigned int code_access_count;
+    
+    // Specific pattern tracking
+    struct {
+        time_t start_time;
+        unsigned int count;
+        char target_directory[PATH_MAX];
+    } rapid_file_access;
 } ProcessContext;
 
 // Add missing process context table
@@ -466,32 +528,147 @@ static void handle_syscall_exit(SyscallContext *ctx, struct user_regs_struct *re
 
     // Only process successful syscalls
     if (result >= 0) {
-        switch (ctx->syscall_number) {
-            case SYS_execve:
-                handle_execve(ctx, regs, 0, event_handler, user_data);
-                break;
-            case SYS_open:
-            case SYS_openat:
-                handle_open(ctx, regs, 0, event_handler, user_data);
-                break;
-            case SYS_read:
-                handle_read(ctx, regs, 0, event_handler, user_data);
-                break;
-            case SYS_write:
-                handle_write(ctx, regs, 0, event_handler, user_data);
-                break;
-            case SYS_rename:
-            case SYS_renameat:
-                handle_rename(ctx, regs, 0, event_handler, user_data);
-                break;
-            case SYS_chmod:
-            case SYS_fchmod:
-                handle_chmod(ctx, regs, 0, event_handler, user_data);
-                break;
-            case SYS_unlink:
-            case SYS_unlinkat:
-                handle_unlink(ctx, regs, 0, event_handler, user_data);
-                break;
+        // Get process context
+        ProcessContext* proc_ctx = get_process_context(ctx->pid);
+        if (!proc_ctx) {
+            // Process not being monitored at the right level - fall back to basic handling
+            switch (ctx->syscall_number) {
+                case SYS_execve:
+                    handle_execve(ctx, regs, 0, event_handler, user_data);
+                    break;
+                case SYS_open:
+                case SYS_openat:
+                    handle_open(ctx, regs, 0, event_handler, user_data);
+                    break;
+                case SYS_read:
+                    handle_read(ctx, regs, 0, event_handler, user_data);
+                    break;
+                case SYS_write:
+                    handle_write(ctx, regs, 0, event_handler, user_data);
+                    break;
+                case SYS_rename:
+                case SYS_renameat:
+                    handle_rename(ctx, regs, 0, event_handler, user_data);
+                    break;
+                case SYS_chmod:
+                case SYS_fchmod:
+                    handle_chmod(ctx, regs, 0, event_handler, user_data);
+                    break;
+                case SYS_unlink:
+                case SYS_unlinkat:
+                    handle_unlink(ctx, regs, 0, event_handler, user_data);
+                    break;
+            }
+            return;
+        }
+        
+        // Create syscall record
+        SyscallRecord record;
+        memset(&record, 0, sizeof(SyscallRecord));
+        
+        record.syscall_number = ctx->syscall_number;
+        record.timestamp = time(NULL);
+        memcpy(record.args, ctx->args, sizeof(record.args));
+        record.return_value = result;
+        
+        // Copy path if available
+        if (ctx->path_buffer[0] != '\0') {
+            strncpy(record.path, ctx->path_buffer, sizeof(record.path) - 1);
+            record.path[sizeof(record.path) - 1] = '\0';
+            record.path_hash = calculate_string_hash(record.path);
+        }
+        record.flags = ctx->access_flags;
+        
+        // Classify syscall intent
+        record.intent = classify_syscall_intent(ctx->syscall_number, ctx->args, 
+                                             result, ctx->path_buffer);
+        
+        // Add to process history
+        record_syscall(proc_ctx, &record);
+        
+        // For high and medium monitoring level processes, check for suspicious sequences
+        if (proc_ctx->monitoring_level >= MONITORING_LEVEL_MEDIUM) {
+            // Only check patterns every few syscalls to reduce overhead
+            if (proc_ctx->syscall_history.count % 5 == 0) {
+                float risk_score = detect_suspicious_sequences(proc_ctx);
+                
+                // If suspicious sequence detected, generate an event
+                if (risk_score > 0.0f) {
+                    Event event;
+                    memset(&event, 0, sizeof(Event));
+                    
+                    event.type = EVENT_PROCESS_BEHAVIOR;
+                    event.process_id = ctx->pid;
+                    event.timestamp = time(NULL);
+                    event.score_impact = risk_score;
+                    
+                    snprintf(event.details, sizeof(event.details),
+                            "Suspicious syscall sequence detected (score: %.1f): %u operations, %u renames, %u permission changes",
+                            risk_score, proc_ctx->file_ops_count, proc_ctx->file_rename_count, 
+                            proc_ctx->permission_change_count);
+                    
+                    // Call the event handler
+                    if (event_handler) {
+                        event_handler(&event, user_data);
+                    }
+                }
+            }
+        }
+        
+        // For low monitoring level processes, only generate events for highly suspicious syscalls
+        if (proc_ctx->monitoring_level == MONITORING_LEVEL_LOW) {
+            // Check if this is a potentially suspicious syscall
+            switch (ctx->syscall_number) {
+                case SYS_rename:
+                case SYS_renameat:
+                    handle_rename(ctx, regs, 0, event_handler, user_data);
+                    break;
+                case SYS_chmod:
+                case SYS_fchmod:
+                    handle_chmod(ctx, regs, 0, event_handler, user_data);
+                    break;
+                case SYS_unlink:
+                case SYS_unlinkat:
+                    handle_unlink(ctx, regs, 0, event_handler, user_data);
+                    break;
+                default:
+                    // Skip event generation for non-suspicious syscalls
+                    break;
+            }
+        } else {
+            // For medium and high monitoring, process all relevant syscalls
+            switch (ctx->syscall_number) {
+                case SYS_execve:
+                    handle_execve(ctx, regs, 0, event_handler, user_data);
+                    break;
+                case SYS_open:
+                case SYS_openat:
+                    // For open, only generate events for interesting files
+                    if (is_interesting_extension(ctx->path_buffer)) {
+                        handle_open(ctx, regs, 0, event_handler, user_data);
+                    }
+                    break;
+                case SYS_write:
+                    // For write, only generate events for large writes
+                    if (ctx->args[2] > 4096) {
+                        handle_write(ctx, regs, 0, event_handler, user_data);
+                    }
+                    break;
+                case SYS_rename:
+                case SYS_renameat:
+                    handle_rename(ctx, regs, 0, event_handler, user_data);
+                    break;
+                case SYS_chmod:
+                case SYS_fchmod:
+                    handle_chmod(ctx, regs, 0, event_handler, user_data);
+                    break;
+                case SYS_unlink:
+                case SYS_unlinkat:
+                    handle_unlink(ctx, regs, 0, event_handler, user_data);
+                    break;
+                default:
+                    break;
+            }
         }
     }
 }
@@ -1159,7 +1336,7 @@ void syscall_monitor_poll(EventHandler handler, void* user_data) {
     // Process directory events
     process_directory_events(handler, user_data);
     
-    // Then process any pending syscall events
+    // Process any pending syscall events
     for (int i = 0; i < 10; i++) {  // Process up to 10 events per poll
         int result = syscall_monitor_process_event(handler, user_data);
         if (result <= 0) {
@@ -1167,27 +1344,68 @@ void syscall_monitor_poll(EventHandler handler, void* user_data) {
         }
     }
     
-    // Update process contexts
+    // Update process contexts and perform periodic pattern analysis
+    static time_t last_pattern_analysis = 0;
     time_t now = time(NULL);
-    for (size_t i = 0; i < process_context_count; i++) {
-        ProcessContext* ctx = &process_contexts_table[i];
+    
+    // Perform deep pattern analysis every 5 seconds
+    if (now - last_pattern_analysis >= 5) {
+        last_pattern_analysis = now;
         
-        // Check if process is still alive
-        char proc_path[64];
-        snprintf(proc_path, sizeof(proc_path), "/proc/%d/stat", ctx->pid);
-        if (access(proc_path, F_OK) != 0) {
-            // Process no longer exists, remove it
-            LOG_INFO("Process %d (%s) has terminated, removing from monitoring", 
-                    ctx->pid, ctx->process_name);
-            syscall_monitor_remove_process(ctx->pid);
-            i--;  // Adjust index since we removed an element
-            continue;
-        }
-        
-        // Update last activity timestamp for processes with recent activity
-        if (now - ctx->last_activity > 300) {  // 5 minutes of inactivity
-            LOG_DEBUG("Process %d (%s) has been inactive for %ld seconds", 
-                     ctx->pid, ctx->process_name, now - ctx->last_activity);
+        // Analyze patterns across all processes
+        for (size_t i = 0; i < process_context_count; i++) {
+            ProcessContext* ctx = &process_contexts_table[i];
+            
+            // Skip low-monitored processes
+            if (ctx->monitoring_level == MONITORING_LEVEL_LOW) {
+                continue;
+            }
+            
+            // Check if process is still alive
+            char proc_path[64];
+            snprintf(proc_path, sizeof(proc_path), "/proc/%d/stat", ctx->pid);
+            if (access(proc_path, F_OK) != 0) {
+                // Process no longer exists, remove it
+                LOG_INFO("Process %d (%s) has terminated, removing from monitoring", 
+                        ctx->pid, ctx->process_name);
+                syscall_monitor_remove_process(ctx->pid);
+                i--;  // Adjust index since we removed an element
+                continue;
+            }
+            
+            // Perform pattern analysis if there are enough syscalls
+            if (ctx->syscall_history.count >= 10) {
+                float risk_score = detect_suspicious_sequences(ctx);
+                
+                if (risk_score > 0.0f) {
+                    // Create an event for the suspicious pattern
+                    Event event;
+                    memset(&event, 0, sizeof(Event));
+                    
+                    event.type = EVENT_PROCESS_BEHAVIOR;
+                    event.process_id = ctx->pid;
+                    event.timestamp = now;
+                    event.score_impact = risk_score;
+                    
+                    snprintf(event.details, sizeof(event.details),
+                            "Suspicious behavior pattern detected (score: %.1f): Process %s performing %u operations/sec",
+                            risk_score, ctx->process_name, 
+                            (unsigned int)((float)ctx->file_ops_count / (now - ctx->pattern_start_time + 1)));
+                    
+                    // Call the event handler
+                    if (handler) {
+                        handler(&event, user_data);
+                    }
+                }
+            }
+            
+            // Apply risk score decay for processes without recent suspicious activity
+            if (ctx->sequence_risk_score > 0.0f && 
+                (now - ctx->last_suspicious_sequence) > 60) {  // 1 minute without suspicious activity
+                
+                // Decay by 10% every minute
+                ctx->sequence_risk_score *= 0.9f;
+            }
         }
     }
 }
@@ -1235,32 +1453,9 @@ int syscall_monitor_add_process(pid_t pid) {
         }
     }
     
-    // Get process name
-    char process_name[256] = {0};
-    char proc_path[64];
-    snprintf(proc_path, sizeof(proc_path), "/proc/%d/comm", pid);
-    
-    FILE* f = fopen(proc_path, "r");
-    if (f) {
-        if (fgets(process_name, sizeof(process_name), f)) {
-            // Remove trailing newline
-            size_t len = strlen(process_name);
-            if (len > 0 && process_name[len-1] == '\n') {
-                process_name[len-1] = '\0';
-            }
-        }
-        fclose(f);
-    }
-    
     // Initialize the new process context
     ProcessContext* ctx = &process_contexts_table[process_context_count++];
-    memset(ctx, 0, sizeof(ProcessContext));
-    ctx->pid = pid;
-    strncpy(ctx->process_name, process_name, sizeof(ctx->process_name) - 1);
-    ctx->monitoring_level = MONITORING_LEVEL_MEDIUM; // Default level
-    ctx->last_activity = time(NULL);
-    
-    LOG_INFO("Added process %d (%s) to monitoring", pid, process_name);
+    init_process_context(ctx, pid);
     
     // Attach to process for syscall monitoring if needed
     return syscall_monitor_attach(pid, NULL, NULL);
@@ -1288,4 +1483,308 @@ void syscall_monitor_remove_process(pid_t pid) {
     }
     
     LOG_DEBUG("Process %d not found in monitoring table", pid);
+}
+
+// Add a syscall record to the process history
+static void record_syscall(ProcessContext* context, SyscallRecord* record) {
+    if (!context || !record) {
+        return;
+    }
+    
+    SyscallHistory* history = &context->syscall_history;
+    
+    // Insert at current head position
+    history->records[history->head] = *record;
+    
+    // Update head and count
+    history->head = (history->head + 1) % SYSCALL_HISTORY_SIZE;
+    if (history->count < SYSCALL_HISTORY_SIZE) {
+        history->count++;
+    }
+    
+    // Update process activity timestamp
+    context->last_activity = record->timestamp;
+    
+    // Update pattern statistics based on syscall intent
+    switch (record->intent) {
+        case SYSCALL_INTENT_FILE_READ:
+        case SYSCALL_INTENT_FILE_WRITE:
+        case SYSCALL_INTENT_FILE_CREATE:
+            context->file_ops_count++;
+            
+            // Track file types
+            const char* ext = strrchr(record->path, '.');
+            if (ext) {
+                if (strcasecmp(ext, ".doc") == 0 || strcasecmp(ext, ".docx") == 0 || 
+                    strcasecmp(ext, ".pdf") == 0 || strcasecmp(ext, ".txt") == 0) {
+                    context->document_access_count++;
+                } else if (strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".png") == 0 || 
+                          strcasecmp(ext, ".gif") == 0 || strcasecmp(ext, ".bmp") == 0) {
+                    context->image_access_count++;
+                } else if (strcasecmp(ext, ".zip") == 0 || strcasecmp(ext, ".rar") == 0 || 
+                          strcasecmp(ext, ".7z") == 0 || strcasecmp(ext, ".tar") == 0) {
+                    context->archive_access_count++;
+                }
+            }
+            break;
+            
+        case SYSCALL_INTENT_FILE_RENAME:
+            context->file_rename_count++;
+            break;
+            
+        case SYSCALL_INTENT_PERMISSION_CHANGE:
+            context->permission_change_count++;
+            break;
+            
+        case SYSCALL_INTENT_FILE_DELETE:
+            context->file_deletion_count++;
+            break;
+            
+        default:
+            break;
+    }
+    
+    // If this is the first operation in a potential pattern, set start time
+    if (context->file_ops_count == 1) {
+        context->pattern_start_time = record->timestamp;
+    }
+}
+
+// Classify syscall by its intent
+static SyscallIntent classify_syscall_intent(long syscall_number, unsigned long args[6], 
+                                          long return_value, const char* path) {
+    switch (syscall_number) {
+        case SYS_read:
+            return SYSCALL_INTENT_FILE_READ;
+            
+        case SYS_write:
+            return SYSCALL_INTENT_FILE_WRITE;
+            
+        case SYS_open:
+        case SYS_openat:
+            // Check flags to determine if it's read or write
+            if (args[1] & O_CREAT) {
+                return SYSCALL_INTENT_FILE_CREATE;
+            } else if (args[1] & (O_WRONLY | O_RDWR)) {
+                return SYSCALL_INTENT_FILE_WRITE;
+            } else {
+                return SYSCALL_INTENT_FILE_READ;
+            }
+            
+        case SYS_unlink:
+        case SYS_unlinkat:
+            return SYSCALL_INTENT_FILE_DELETE;
+            
+        case SYS_rename:
+        case SYS_renameat:
+            return SYSCALL_INTENT_FILE_RENAME;
+            
+        case SYS_chmod:
+        case SYS_fchmod:
+        case SYS_fchmodat:
+            return SYSCALL_INTENT_PERMISSION_CHANGE;
+            
+        case SYS_execve:
+            return SYSCALL_INTENT_PROCESS_CREATE;
+            
+        case SYS_connect:
+        case SYS_sendto:
+        case SYS_recvfrom:
+            return SYSCALL_INTENT_NETWORK_ACCESS;
+            
+        case SYS_mmap:
+        case SYS_mprotect:
+            return SYSCALL_INTENT_MEMORY_ALLOCATION;
+            
+        default:
+            return SYSCALL_INTENT_UNKNOWN;
+    }
+}
+
+// Check for ransomware-like file operation patterns
+static float detect_ransomware_patterns(ProcessContext* context) {
+    if (!context || context->syscall_history.count < 5) {
+        return 0.0f;  // Not enough syscalls to analyze
+    }
+    
+    float risk_score = 0.0f;
+    time_t now = time(NULL);
+    SyscallHistory* history = &context->syscall_history;
+    
+    // Count operations in the last 5 seconds
+    int file_ops = 0;
+    int renames = 0;
+    int permission_changes = 0;
+    int deletions = 0;
+    
+    for (int i = 0; i < history->count; i++) {
+        SyscallRecord* record = &history->records[(history->head - 1 - i + SYSCALL_HISTORY_SIZE) 
+                                              % SYSCALL_HISTORY_SIZE];
+        
+        // Skip older records
+        if (now - record->timestamp > 5) {
+            continue;
+        }
+        
+        // Count by intent
+        switch (record->intent) {
+            case SYSCALL_INTENT_FILE_WRITE:
+                file_ops++;
+                break;
+            case SYSCALL_INTENT_FILE_RENAME:
+                renames++;
+                break;
+            case SYSCALL_INTENT_PERMISSION_CHANGE:
+                permission_changes++;
+                break;
+            case SYSCALL_INTENT_FILE_DELETE:
+                deletions++;
+                break;
+            default:
+                break;
+        }
+    }
+    
+    // Calculate time span of recent operations
+    time_t time_span = now - context->pattern_start_time;
+    if (time_span == 0) time_span = 1;  // Avoid division by zero
+    
+    // Calculate operations per second
+    float ops_per_second = (float)(context->file_ops_count + context->file_rename_count + 
+                                  context->permission_change_count + context->file_deletion_count) / time_span;
+    
+    // Pattern: Rapid file operations (ransomware behavior)
+    if (ops_per_second > 5.0f && (renames > 3 || permission_changes > 3)) {
+        risk_score += 15.0f;
+        LOG_WARNING("Process %d (%s) shows ransomware-like behavior: %.1f ops/sec, %d renames, %d permission changes",
+                   context->pid, context->process_name, ops_per_second, renames, permission_changes);
+        
+        context->suspicious_sequences++;
+        context->last_suspicious_sequence = now;
+    }
+    
+    // Pattern: Multiple file types affected (ransomware typically targets many file types)
+    if (context->document_access_count > 3 && 
+        context->image_access_count > 3 && 
+        context->file_ops_count > 10 && 
+        ops_per_second > 2.0f) {
+        
+        risk_score += 15.0f;
+        LOG_WARNING("Process %d (%s) accessing multiple file types rapidly - possible ransomware",
+                   context->pid, context->process_name);
+        
+        context->suspicious_sequences++;
+        context->last_suspicious_sequence = now;
+    }
+    
+    return risk_score;
+}
+
+// Detect file extension changes in syscall history
+static int detect_extension_changes(ProcessContext* context) {
+    if (!context) return 0;
+    
+    SyscallHistory* history = &context->syscall_history;
+    int extension_changes = 0;
+    
+    // Track rename operations
+    for (int i = 0; i < history->count; i++) {
+        SyscallRecord* record = &history->records[(history->head - 1 - i + SYSCALL_HISTORY_SIZE) 
+                                              % SYSCALL_HISTORY_SIZE];
+        
+        if (record->intent != SYSCALL_INTENT_FILE_RENAME) {
+            continue;
+        }
+        
+        // For a real implementation, we'd need both old and new paths
+        // Here we'll simulate by using the next record, assuming it's available
+        if (i + 1 < history->count) {
+            SyscallRecord* next_record = &history->records[(history->head - 1 - (i+1) + SYSCALL_HISTORY_SIZE) 
+                                                      % SYSCALL_HISTORY_SIZE];
+            
+            // Check if the destination path exists in the next record
+            if (next_record->path[0] != '\0') {
+                const char* old_ext = strrchr(record->path, '.');
+                const char* new_ext = strrchr(next_record->path, '.');
+                
+                if (old_ext && new_ext && strcmp(old_ext, new_ext) != 0) {
+                    extension_changes++;
+                    
+                    // Check for known ransomware extensions
+                    if (strstr(new_ext, ".encrypted") || 
+                        strstr(new_ext, ".locked") || 
+                        strstr(new_ext, ".ransom") || 
+                        strstr(new_ext, ".crypt")) {
+                        
+                        // Known ransomware extension - higher risk
+                        extension_changes += 5;
+                    }
+                }
+            }
+        }
+    }
+    
+    return extension_changes;
+}
+
+// Master function to detect all suspicious sequences
+static float detect_suspicious_sequences(ProcessContext* context) {
+    if (!context) {
+        return 0.0f;
+    }
+    
+    float risk_score = 0.0f;
+    
+    // Check for ransomware patterns
+    risk_score += detect_ransomware_patterns(context);
+    
+    // Check for extension changes
+    int extension_changes = detect_extension_changes(context);
+    if (extension_changes > 0) {
+        float ext_score = extension_changes * 3.0f;
+        risk_score += ext_score;
+        
+        LOG_WARNING("Process %d (%s) changed file extensions %d times - possible encryption activity",
+                   context->pid, context->process_name, extension_changes);
+    }
+    
+    // If risk score increased, update process risk score
+    if (risk_score > 0.0f) {
+        context->sequence_risk_score += risk_score;
+    }
+    
+    return risk_score;
+}
+
+// Initialize a process context
+static void init_process_context(ProcessContext* context, pid_t pid) {
+    if (!context) return;
+    
+    memset(context, 0, sizeof(ProcessContext));
+    context->pid = pid;
+    context->monitoring_level = MONITORING_LEVEL_MEDIUM; // Default level
+    context->last_activity = time(NULL);
+    
+    // Get process name
+    char proc_path[64];
+    snprintf(proc_path, sizeof(proc_path), "/proc/%d/comm", pid);
+    
+    FILE* f = fopen(proc_path, "r");
+    if (f) {
+        if (fgets(context->process_name, sizeof(context->process_name), f)) {
+            // Remove trailing newline
+            size_t len = strlen(context->process_name);
+            if (len > 0 && context->process_name[len-1] == '\n') {
+                context->process_name[len-1] = '\0';
+            }
+        }
+        fclose(f);
+    }
+    
+    // Initialize syscall history
+    context->syscall_history.head = 0;
+    context->syscall_history.count = 0;
+    context->pattern_start_time = time(NULL);
+    
+    LOG_INFO("Initialized context for process %d (%s)", pid, context->process_name);
 }
