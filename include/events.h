@@ -40,6 +40,7 @@ typedef enum {
     EVENT_PROCESS_CORRELATION,  // Correlated suspicious process activity
     EVENT_PROCESS_LINEAGE,      // Process ancestry/lineage suspicious
     EVENT_PROCESS_OBFUSCATION,  // Command line obfuscation detected
+    EVENT_PROCESS_MASQUERADE,   // Process disguising as system process
     
     // Additional memory-related events
     EVENT_MEMORY_RWX,           // Executable and writable memory detected

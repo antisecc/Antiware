@@ -77,6 +77,7 @@ static void event_callback(const Event* event, void* user_data);
 static int __attribute__((unused)) daemonize(void);
 static void __attribute__((unused)) scan_running_processes(void);
 static void __attribute__((unused)) initialize_logging(void);
+void configure_risk_scoring(int threshold);
 
 // Remove redundant argument parsing
 
@@ -626,4 +627,49 @@ static void initialize_logging(void) {
         // In console mode, log to stdout
         logger_init(LOG_TO_STDOUT, level);
     }
+}
+
+// Add to main.c or similar configuration handling code:
+
+void configure_risk_scoring(int threshold) {
+    // Set risk threshold if provided in config
+    if (threshold > 0) {
+        set_risk_threshold((float)threshold);
+        LOG_INFO("Risk threshold configured to %d", threshold);
+    }
+}
+
+// In main.c, initialize the logging system
+
+int main(int argc, char* argv[]) {
+    // Parse command line options
+    int verbose = 0;
+    int json_logs = 0;
+    char json_file[256] = {0};
+    
+    // ... parse command line options ...
+    
+    // Initialize logging
+    LogDestination log_dest = json_logs ? LOG_TO_JSON : LOG_TO_STDOUT;
+    logger_init(log_dest, verbose ? LOG_LEVEL_DEBUG : LOG_LEVEL_INFO);
+    
+    if (verbose) {
+        logger_set_verbose(1);
+    }
+    
+    if (json_logs && json_file[0] != '\0') {
+        logger_set_json_file(json_file);
+    }
+    
+    // Set minimum risk score (default is 10.0)
+    logger_set_min_risk_score(10.0f);
+    
+    // ... initialize other components ...
+    
+    // Register cleanup
+    atexit(logger_cleanup);
+    
+    // ... main program ...
+    
+    return 0;
 }

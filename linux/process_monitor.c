@@ -14,6 +14,9 @@
 #include <ctype.h>
 #include <limits.h>
 #include <strings.h>
+#include <stdint.h>
+#include <math.h>
+#include <sys/mman.h>
 
 #include "../include/antiransom.h"
 #include "../include/events.h"
@@ -55,6 +58,16 @@
 #define MONITORING_LEVEL_MEDIUM  2   // Standard monitoring
 #define MONITORING_LEVEL_HIGH    3   // Detailed monitoring
 #define MONITORING_LEVEL_INTENSE 4   // Every possible check
+
+// Process lineage tracking definitions
+#define PROCESS_HASH_TABLE_SIZE 256
+#define PARENT_RISK_INHERITANCE_FACTOR 0.5f  // Default inheritance factor
+#define MAX_LINEAGE_DEPTH 10  // Maximum parent chain depth to track
+
+// Define thresholds for entropy detection
+#define HIGH_ENTROPY_THRESHOLD 7.5
+#define MEDIUM_ENTROPY_THRESHOLD 7.0
+#define MAX_ENTROPY_SAMPLE_SIZE (1024 * 1024)  // 1MB max sample size
 
 // Structure to track a child process
 typedef struct {
@@ -141,6 +154,7 @@ typedef struct {
     uint32_t process_hash;             // Hash of process path for consistent identification
     float contextual_trust_multiplier;  // Multiplier for trust level based on context
 
+    
     // Memory statistics
     unsigned long memory_usage_kb;     // Current memory usage
     unsigned long prev_memory_usage_kb; // Previous memory usage
@@ -153,11 +167,15 @@ typedef struct {
     int monitoring_level;                // Level of monitoring detail
     time_t last_level_adjustment;        // When we last adjusted monitoring level
     int monitoring_events_processed;     // Events processed since last adjustment
-    time_t elevated_monitoring_until;    // Time until which heightened monitoring is active
     time_t elevated_monitoring_until;   // Timestamp until which monitoring is elevated
     struct file_attr* file_attributes;  // Optional file attributes (download time, etc.)
 
     ProcessOrigin origin;         // Classification of where process originated
+
+    // Entropy tracking
+    int high_entropy_writes;          // Count of high-entropy writes detected
+    time_t last_entropy_detection;    // Timestamp of last high-entropy detection
+    float last_file_entropy;          // Entropy value of last file accessed
 } ProcessInfo;
 
 // Process monitoring level
@@ -238,6 +256,24 @@ typedef enum {
     ORIGIN_RECENT_DOWNLOAD    // Recently downloaded file
 } ProcessOrigin;
 
+// Hash table for efficient parent-child lookups
+static ParentChildRelation* process_lineage_table[PROCESS_HASH_TABLE_SIZE] = {NULL};
+static pthread_mutex_t lineage_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Process lineage chain for tracking ancestors
+typedef struct {
+    pid_t process_chain[MAX_LINEAGE_DEPTH];
+    int chain_length;
+} ProcessLineage;
+
+// Forward declarations for new functions
+static uint32_t hash_pid(pid_t pid);
+static int track_parent_child(pid_t parent_pid, pid_t child_pid, float parent_risk);
+static void inherit_risk_score(pid_t child_pid);
+static void get_process_lineage(pid_t pid, ProcessLineage* lineage);
+static int is_ancestor(pid_t potential_ancestor, pid_t pid);
+static void cleanup_old_lineage_entries(time_t older_than);
+
 // Initialize the process monitor
 int process_monitor_init(EventHandler handler, void* user_data) {
     memset(monitored_processes, 0, sizeof(monitored_processes));
@@ -257,6 +293,13 @@ int process_monitor_init(EventHandler handler, void* user_data) {
         strncpy(current_user_home, pw->pw_dir, sizeof(current_user_home) - 1);
     }
     
+    if (scoring_init() != 0) {
+        LOG_ERROR("Failed to initialize scoring system");
+        return -1;
+    }
+    
+    initialize_lineage_tracking();
+    
     LOG_INFO("Process monitor initialized (uid: %d)", current_user_uid);
     return 0;
 }
@@ -274,6 +317,9 @@ void process_monitor_cleanup(void) {
     
     // Reset process info array
     process_count = 0;
+    
+    scoring_cleanup();
+    cleanup_lineage_tracking();
     
     LOG_INFO("Process monitor cleaned up%s", "");
 }
@@ -367,70 +413,95 @@ void process_monitor_poll(void) {
         // Apply risk decay to all processes
         apply_risk_decay();
         
+        // Apply risk inheritance to all processes
+        apply_risk_inheritance();
+        
+        // Clean up old lineage entries (older than 1 hour)
+        cleanup_old_lineage_entries(now - 3600);
+        
         last_deep_analysis = now;
     }
 }
 
 // Register a file access event for a process
-                strcasecmp(ext, ".ppt") == 0 || strcasecmp(ext, ".pptx") == 0 ||
-                strcasecmp(ext, ".pdf") == 0 || strcasecmp(ext, ".txt") == 0) {
-                proc->file_types_accessed[0]++;
-            }
-            // Media
-            else if (strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".jpeg") == 0 ||
-                     strcasecmp(ext, ".png") == 0 || strcasecmp(ext, ".gif") == 0 ||
-                     strcasecmp(ext, ".mp3") == 0 || strcasecmp(ext, ".mp4") == 0 ||
-                     strcasecmp(ext, ".avi") == 0 || strcasecmp(ext, ".mov") == 0) {
-                proc->file_types_accessed[1]++;
-            }
-            // Archives
-            else if (strcasecmp(ext, ".zip") == 0 || strcasecmp(ext, ".rar") == 0 ||
-                     strcasecmp(ext, ".7z") == 0 || strcasecmp(ext, ".tar") == 0 ||
-                     strcasecmp(ext, ".gz") == 0 || strcasecmp(ext, ".bz2") == 0) {
-                proc->file_types_accessed[2]++;
-            }
-            // Code/Config
-            else if (strcasecmp(ext, ".c") == 0 || strcasecmp(ext, ".cpp") == 0 ||
-                     strcasecmp(ext, ".h") == 0 || strcasecmp(ext, ".py") == 0 ||
-                     strcasecmp(ext, ".js") == 0 || strcasecmp(ext, ".html") == 0 ||
-                     strcasecmp(ext, ".css") == 0 || strcasecmp(ext, ".xml") == 0 ||
-                     strcasecmp(ext, ".json") == 0 || strcasecmp(ext, ".yml") == 0 ||
-                     strcasecmp(ext, ".ini") == 0 || strcasecmp(ext, ".conf") == 0) {
-                proc->file_types_accessed[3]++;
-            }
-            // Others
-            else {
-                proc->file_types_accessed[4]++;
-            }
+void process_monitor_file_access(pid_t pid, const char* path, int write_access, const void* data, size_t data_size) {
+    ProcessInfo* proc = find_process_info(pid);
+    if (!proc) {
+        return;
+    }
+    
+    // Update file access count and rate
+    time_t now = time(NULL);
+    proc->file_access_count++;
+    float time_diff = (float)(now - proc->last_file_access_time);
+    if (time_diff > 0) {
+        proc->file_access_rate = (float)proc->file_access_count / time_diff;
+    }
+    
+    // Check for specific file types
+    const char* ext = strrchr(path, '.');
+    if (ext) {
+        // Document files
+        if (strcasecmp(ext, ".doc") == 0 || strcasecmp(ext, ".docx") == 0 ||
+            strcasecmp(ext, ".xls") == 0 || strcasecmp(ext, ".xlsx") == 0 ||
+            strcasecmp(ext, ".ppt") == 0 || strcasecmp(ext, ".pptx") == 0 ||
+            strcasecmp(ext, ".pdf") == 0 || strcasecmp(ext, ".txt") == 0) {
+            proc->file_types_accessed[0]++;
         }
+        // Media
+        else if (strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".jpeg") == 0 ||
+                 strcasecmp(ext, ".png") == 0 || strcasecmp(ext, ".gif") == 0 ||
+                 strcasecmp(ext, ".mp3") == 0 || strcasecmp(ext, ".mp4") == 0 ||
+                 strcasecmp(ext, ".avi") == 0 || strcasecmp(ext, ".mov") == 0) {
+            proc->file_types_accessed[1]++;
+        }
+        // Archives
+        else if (strcasecmp(ext, ".zip") == 0 || strcasecmp(ext, ".rar") == 0 ||
+                 strcasecmp(ext, ".7z") == 0 || strcasecmp(ext, ".tar") == 0 ||
+                 strcasecmp(ext, ".gz") == 0 || strcasecmp(ext, ".bz2") == 0) {
+            proc->file_types_accessed[2]++;
+        }
+        // Code/Config
+        else if (strcasecmp(ext, ".c") == 0 || strcasecmp(ext, ".cpp") == 0 ||
+                 strcasecmp(ext, ".h") == 0 || strcasecmp(ext, ".py") == 0 ||
+                 strcasecmp(ext, ".js") == 0 || strcasecmp(ext, ".html") == 0 ||
+                 strcasecmp(ext, ".css") == 0 || strcasecmp(ext, ".xml") == 0 ||
+                 strcasecmp(ext, ".json") == 0 || strcasecmp(ext, ".yml") == 0 ||
+                 strcasecmp(ext, ".ini") == 0 || strcasecmp(ext, ".conf") == 0) {
+            proc->file_types_accessed[3]++;
+        }
+        // Others
+        else {
+            proc->file_types_accessed[4]++;
+        }
+    }
+    
+    // Track sequential operations
+    if (time_diff < 2) { // Within 2 seconds
+        proc->consecutive_file_ops++;
         
-        // Track sequential operations
-        if (time_diff < 2) { // Within 2 seconds
-            proc->consecutive_file_ops++;
+        // Detect sequential operations on different file types (ransomware pattern)
+        if (proc->consecutive_file_ops > 20 && 
+            proc->file_types_accessed[0] > 5 && 
+            proc->file_types_accessed[1] > 5) {
             
-            // Detect sequential operations on different file types (ransomware pattern)
-            if (proc->consecutive_file_ops > 20 && 
-                proc->file_types_accessed[0] > 5 && 
-                proc->file_types_accessed[1] > 5) {
-                
-                // This is highly suspicious - rapid sequential operations on multiple file types
-                char details[256];
-                snprintf(details, sizeof(details), 
-                        "Suspicious sequential operations on multiple file types: %d consecutive operations",
-                        proc->consecutive_file_ops);
-                
-                LOG_WARNING("Process %d (%s) performing sequential file operations on multiple file types",
-                           proc->pid, proc->comm);
-                
-                generate_process_event(proc->pid, EVENT_PROCESS_BEHAVIOR, details, 35.0f);
-                
-                // Record this highly suspicious behavior
-                record_behavior_event(proc, EVENT_PROCESS_BEHAVIOR, 35.0f, details);
-            }
-        } else {
-            // Reset consecutive counter if operations are not rapid
-            proc->consecutive_file_ops = 1;
+            // This is highly suspicious - rapid sequential operations on multiple file types
+            char details[256];
+            snprintf(details, sizeof(details), 
+                    "Suspicious sequential operations on multiple file types: %d consecutive operations",
+                    proc->consecutive_file_ops);
+            
+            LOG_WARNING("Process %d (%s) performing sequential file operations on multiple file types",
+                       proc->pid, proc->comm);
+            
+            generate_process_event(proc->pid, EVENT_PROCESS_BEHAVIOR, details, 35.0f);
+            
+            // Record this highly suspicious behavior
+            record_behavior_event(proc, EVENT_PROCESS_BEHAVIOR, 35.0f, details);
         }
+    } else {
+        // Reset consecutive counter if operations are not rapid
+        proc->consecutive_file_ops = 1;
     }
     
     // Check for rapid file access
@@ -452,6 +523,23 @@ void process_monitor_poll(void) {
             // Record this behavior
             record_behavior_event(proc, EVENT_PROCESS_BEHAVIOR, 15.0f, details);
         }
+        
+        // Update risk score
+        char details[256];
+        snprintf(details, sizeof(details), 
+                "Rapid file access rate: %.2f files/sec (threshold: %d)",
+                proc->file_access_rate, RAPID_FILE_ACCESS_THRESHOLD);
+        
+        float base_score = RISK_RAPID_FILE_MODIFICATIONS;
+        float adjusted_score = adjust_score_for_context(pid, base_score, 
+                                                      proc->exe_path, proc->comm);
+        
+        int threshold_exceeded = update_process_score(pid, adjusted_score, details);
+        
+        // Generate alert if threshold exceeded
+        if (threshold_exceeded) {
+            generate_process_event(pid, EVENT_PROCESS_SUSPICIOUS, details, adjusted_score);
+        }
     }
     
     // Detect read-then-write pattern (common in ransomware)
@@ -472,6 +560,61 @@ void process_monitor_poll(void) {
                 
                 // Record this behavior
                 record_behavior_event(proc, EVENT_PROCESS_BEHAVIOR, 20.0f, details);
+            }
+        }
+    }
+    
+    // Check for high entropy if we have data
+    if (data && data_size > 64 && write_access) {
+        float entropy = 0.0f;
+        float entropy_score = scoring_calculate_entropy_impact(data, data_size, &entropy);
+        
+        if (entropy_score > 0) {
+            char details[256];
+            snprintf(details, sizeof(details), 
+                    "High entropy write detected: %.2f (size: %zu bytes)",
+                    entropy, data_size);
+            
+            float adjusted_score = adjust_score_for_context(pid, entropy_score, 
+                                                         proc->exe_path, proc->comm);
+            
+            int threshold_exceeded = update_process_score(pid, adjusted_score, details);
+            
+            // Log the high entropy write
+            LOG_WARNING("Process %d (%s) performed high entropy write: %.2f entropy",
+                      pid, proc->comm, entropy);
+            
+            // Generate alert if threshold exceeded
+            if (threshold_exceeded) {
+                generate_process_event(pid, EVENT_PROCESS_SUSPICIOUS, details, adjusted_score);
+            }
+        }
+    }
+    
+    // Enhanced high-entropy detection for write operations
+    if (write_access && data && data_size > 4096) {
+        // Check for high-entropy content in the data being written
+        if (detect_high_entropy_data(data, data_size, proc, path)) {
+            // If high-entropy data was detected, check if this is a legitimate
+            // high-entropy file or a potential ransomware encryption
+            if (analyze_high_entropy_file(path, proc)) {
+                // Potentially malicious encryption detected
+                char details[256];
+                snprintf(details, sizeof(details), 
+                        "Suspicious high-entropy write to non-standard format file: %s (entropy: %.2f)", 
+                        path, proc->last_file_entropy);
+                
+                LOG_ALERT("POSSIBLE ENCRYPTION ATTACK: Process %d (%s) wrote suspicious high-entropy data!", 
+                         proc->pid, proc->comm);
+                
+                // Record as highly suspicious behavior
+                record_behavior_event(proc, EVENT_PROCESS_SUSPICIOUS, 40.0f, details);
+                
+                // Generate a high-priority suspicious process event
+                generate_process_event(proc->pid, EVENT_PROCESS_SUSPICIOUS, details, 40.0f);
+                
+                // Update risk score with a significant increase
+                update_process_score(proc->pid, 15, "Suspicious encryption-like activity detected");
             }
         }
     }
@@ -546,6 +689,29 @@ void process_monitor_new_process(pid_t parent_pid, pid_t child_pid) {
         
         // Record this behavior
         record_behavior_event(parent, EVENT_PROCESS_BEHAVIOR, 10.0f, details);
+        
+        // Update risk score
+        char details[256];
+        snprintf(details, sizeof(details), 
+                "Rapid process creation: %d processes/min (threshold: %d)",
+                parent->spawn_rate, RAPID_SPAWN_THRESHOLD);
+        
+        float base_score = RISK_CHILD_PROCESS_SPAWNING;
+        float adjusted_score = adjust_score_for_context(parent_pid, base_score, 
+                                                      parent->exe_path, parent->comm);
+        
+        int threshold_exceeded = update_process_score(parent_pid, adjusted_score, details);
+        
+        // Get score context to update spawn count
+        ProcessScoreContext* context = get_process_score_context(parent_pid);
+        if (context) {
+            context->process_spawn_count++;
+        }
+        
+        // Generate alert if threshold exceeded
+        if (threshold_exceeded) {
+            generate_process_event(parent_pid, EVENT_PROCESS_SUSPICIOUS, details, adjusted_score);
+        }
     }
     
     // Also add the child to our monitoring list
@@ -561,6 +727,20 @@ void process_monitor_new_process(pid_t parent_pid, pid_t child_pid) {
             
             // If parent is suspicious, child is also suspicious by lineage
             child->ancestry_suspicious = (parent->suspicion_score > 30.0f);
+            
+            // Inherit risk immediately for highly suspicious parents
+            if (parent->suspicion_score > 60.0f) {
+                inherit_risk_score(child_pid);
+            }
+            
+            // Adjust monitoring level for children of suspicious parents
+            if (parent->suspicion_score > 50.0f) {
+                if (child->monitoring_level < MONITORING_LEVEL_HIGH) {
+                    child->monitoring_level = MONITORING_LEVEL_HIGH;
+                    LOG_INFO("Increased monitoring level for child %d (%s) of suspicious parent %d (%s)",
+                            child->pid, child->comm, parent->pid, parent->comm);
+                }
+            }
             
             if (child->ancestry_suspicious) {
                 LOG_WARNING("Process %d (%s) has suspicious parent %d (%s) with score %.2f",
@@ -583,6 +763,7 @@ void process_monitor_new_process(pid_t parent_pid, pid_t child_pid) {
     
     // Update suspicion score based on new information
     update_process_suspicious_score(parent);
+    track_parent_child(parent_pid, child_pid, parent->suspicion_score);
 }
 
 // Get process monitoring statistics
@@ -698,6 +879,9 @@ static ProcessInfo* add_process_info(pid_t pid) {
             monitored_processes[least_suspicious_idx].last_file_op_time = 0;
             monitored_processes[least_suspicious_idx].consecutive_file_ops = 0;
             
+            // Initialize entropy tracking
+            init_entropy_tracking(&monitored_processes[least_suspicious_idx]);
+            
             return &monitored_processes[least_suspicious_idx];
         }
         
@@ -718,6 +902,9 @@ static ProcessInfo* add_process_info(pid_t pid) {
     proc->long_term_risk = 0.0f;
     proc->last_file_op_time = 0;
     proc->consecutive_file_ops = 0;
+    
+    // Initialize entropy tracking
+    init_entropy_tracking(proc);
     
     return proc;
 }
@@ -1004,7 +1191,7 @@ static void propagate_process_suspicion(void) {
                 if (!child->ancestry_suspicious) {
                     child->ancestry_suspicious = 1;
                     
-                    LOG_WARNING("Process %d (%s) inherits suspicion from parent %d (%s): %.2f -> %.2f",
+                    LOG_WARNING("Process %d (%s) inherits suspicion from parent %d (%s) with score %.2f -> %.2f",
                               child->pid, child->comm, parent->pid, parent->comm,
                               old_score, child->suspicion_score);
                     
@@ -1080,35 +1267,122 @@ static void propagate_process_suspicion(void) {
             }
         }
     }
+    
+    // Also check for multi-generation suspicious lineage
+    for (int i = 0; i < process_count; i++) {
+        ProcessInfo* proc = &monitored_processes[i];
+        if (proc->suspicion_score < 30.0f) continue;
+        
+        // Get the process lineage
+        ProcessLineage lineage;
+        get_process_lineage(proc->pid, &lineage);
+        
+        // Skip processes with short lineage
+        if (lineage.chain_length < 2) continue;
+        
+        // Count suspicious ancestors
+        int suspicious_ancestors = 0;
+        for (int j = 1; j < lineage.chain_length; j++) {
+            ProcessInfo* ancestor = find_process_info(lineage.process_chain[j]);
+            if (ancestor && ancestor->suspicion_score > 30.0f) {
+                suspicious_ancestors++;
+            }
+        }
+        
+        // If we have a chain of suspicious processes, this is a strong indicator
+        if (suspicious_ancestors >= 2) {
+            char details[256];
+            snprintf(details, sizeof(details),
+                    "Detected suspicious process chain: %d suspicious ancestors in lineage chain of %d",
+                    suspicious_ancestors, lineage.chain_length);
+            
+            LOG_WARNING("Process %d (%s) has %d suspicious ancestors in lineage chain",
+                       proc->pid, proc->comm, suspicious_ancestors);
+            
+            // Add a significant bonus to the risk score
+            float old_score = proc->suspicion_score;
+            proc->suspicion_score += 25.0f;
+            if (proc->suspicion_score > 100.0f) proc->suspicion_score = 100.0f;
+            
+            generate_process_event(proc->pid, EVENT_PROCESS_LINEAGE, details, 25.0f);
+            record_behavior_event(proc, EVENT_PROCESS_LINEAGE, 25.0f, details);
+            
+            // Also look for "siblings" (processes with same parent) that are suspicious
+            pid_t parent_pid = 0;
+            if (lineage.chain_length > 1) {
+                parent_pid = lineage.process_chain[1]; // The immediate parent
+            }
+            
+            if (parent_pid > 0) {
+                // Find all other children of this parent
+                int suspicious_siblings = 0;
+                int total_siblings = 0;
+                
+                for (int j = 0; j < process_count; j++) {
+                    ProcessInfo* sibling = &monitored_processes[j];
+                    if (sibling->pid == proc->pid) continue; // Skip self
+                    
+                    // Check if this process has the same parent
+                    if (sibling->ppid == parent_pid) {
+                        total_siblings++;
+                        if (sibling->suspicion_score > 30.0f) {
+                            suspicious_siblings++;
+                        }
+                    }
+                }
+                
+                // If multiple siblings are suspicious, this indicates coordinated activity
+                if (suspicious_siblings > 0 && total_siblings > 1) {
+                    LOG_WARNING("Process %d (%s) has %d/%d suspicious siblings from parent %d",
+                               proc->pid, proc->comm, suspicious_siblings, total_siblings, parent_pid);
+                    
+                    // Additional risk for coordinated suspicious siblings
+                    float sibling_bonus = 5.0f * suspicious_siblings;
+                    if (sibling_bonus > 20.0f) sibling_bonus = 20.0f;
+                    
+                    proc->suspicion_score += sibling_bonus;
+                    if (proc->suspicion_score > 100.0f) proc->suspicion_score = 100.0f;
+                    
+                    char sibling_details[256];
+                    snprintf(sibling_details, sizeof(sibling_details),
+                            "Process has %d suspicious siblings from parent %d (total: %d)",
+                            suspicious_siblings, parent_pid, total_siblings);
+                    
+                    generate_process_event(proc->pid, EVENT_PROCESS_CORRELATION, sibling_details, sibling_bonus);
+                    record_behavior_event(proc, EVENT_PROCESS_CORRELATION, sibling_bonus, sibling_details);
+                }
+            }
+        }
+    }
+    
+    // Check for suspicious memory regions in all processes
+    for (int i = 0; i < process_count; i++) {
+        ProcessInfo* proc = &monitored_processes[i];
+        if (proc->suspicion_score < 30.0f) continue;
+        
+        // Check for suspicious memory regions (RWX)
+        if (check_memory_injection(proc->pid)) {
+            char details[256];
+            snprintf(details, sizeof(details),
+                    "Suspicious RWX memory regions detected in process %d (%s)",
+                    proc->pid, proc->comm);
+            
+            LOG_WARNING("Process %d (%s) has suspicious RWX memory regions",
+                       proc->pid, proc->comm);
+            
+            // Add a significant bonus to the risk score
+            float old_score = proc->suspicion_score;
+            proc->suspicion_score += 20.0f;
+            if (proc->suspicion_score > 100.0f) proc->suspicion_score = 100.0f;
+            
+            generate_process_event(proc->pid, EVENT_MEMORY_SUSPICIOUS, details, 20.0f);
+            record_behavior_event(proc, EVENT_MEMORY_SUSPICIOUS, 20.0f, details);
+        }
+    }
 }
 
 // Update analyze_process to incorporate more behavioral analysis
 static void analyze_process(ProcessInfo* proc) {
-    // Skip some checks based on monitoring level
-    if (proc->monitoring_level == MONITORING_LEVEL_LOW) {
-        // For low-monitoring processes, only check for privilege escalation
-        // and extremely suspicious behavior
-        proc->is_from_suspicious_location = 0;
-        proc->has_suspicious_name = 0;
-        proc->has_suspicious_cmdline = 0;
-        proc->has_elevated_privileges = 0;
-        
-        // Only run basic checks
-        check_privilege_escalation(proc);
-        
-        // Skip other analysis unless suspicion score is rising
-        if (proc->suspicion_score < 15.0f) {
-            update_process_suspicious_score(proc);
-            return;
-        }
-    }
-    else if (proc->monitoring_level == MONITORING_LEVEL_MEDIUM) {
-        // For medium monitoring, skip some intensive checks
-        proc->is_from_suspicious_location = 0;
-        proc->has_suspicious_name = 0;
-        proc->has_suspicious_cmdline = 0;
-        proc->has_elevated_privileges = 0;
-        
         // Run most checks
         check_suspicious_location(proc);
         check_suspicious_cmdline(proc);
@@ -1234,6 +1508,58 @@ static void analyze_process(ProcessInfo* proc) {
             last_event_time = now;
         }
     }
+    
+    // Scan for high-entropy files if this is a high-risk process
+    if (proc->monitoring_level >= MONITORING_LEVEL_HIGH || 
+        proc->suspicion_score >= 40.0f || 
+        proc->high_entropy_writes > 0) {
+        
+        scan_files_for_entropy_changes(proc);
+    }
+
+    // Check for process masquerading
+    int masquerade_level = is_masquerading(proc->pid);
+    if (masquerade_level > 0) {
+        char details[256];
+        snprintf(details, sizeof(details),
+                "Process masquerading detected: %s running from unexpected location: %s",
+                proc->comm, proc->exe_path);
+        
+        // Higher score for more suspicious masquerading techniques
+        float score_impact = masquerade_level > 1 ? 20.0f : 15.0f;
+        
+        record_behavior_event(proc, EVENT_PROCESS_MASQUERADE, score_impact, details);
+        generate_process_event(proc->pid, EVENT_PROCESS_MASQUERADE, details, score_impact);
+        
+        // Add JSON structured logging
+        LOG_PROCESS_EVENT(LOG_LEVEL_WARNING, proc->pid, proc->suspicion_score, details);
+        
+        // Update risk score
+        update_process_score(proc->pid, score_impact, "Process masquerading detected");
+    }
+    
+    // Check for memory injection - only for medium or higher monitoring
+    if (proc->monitoring_level >= MONITORING_LEVEL_MEDIUM) {
+        int suspicious_regions = check_memory_injection(proc->pid);
+        if (suspicious_regions > 0) {
+            char details[256];
+            snprintf(details, sizeof(details),
+                    "Memory injection suspicious: %d RWX memory regions detected",
+                    suspicious_regions);
+            
+            // Scale impact based on number of suspicious regions
+            float score_impact = 15.0f + (suspicious_regions > 3 ? 5.0f : 0.0f);
+            
+            record_behavior_event(proc, EVENT_MEMORY_RWX, score_impact, details);
+            generate_process_event(proc->pid, EVENT_MEMORY_RWX, details, score_impact);
+            
+            // Add JSON structured logging
+            LOG_PROCESS_EVENT(LOG_LEVEL_WARNING, proc->pid, proc->suspicion_score, details);
+            
+            // Update risk score
+            update_process_score(proc->pid, score_impact, "Suspicious memory permissions detected");
+        }
+    }
 }
 
 // Check if process is running from a suspicious location
@@ -1283,6 +1609,25 @@ static void check_suspicious_location(ProcessInfo* proc) {
                            proc->pid, proc->comm, proc->exe_path);
                 return;
             }
+        }
+    }
+    
+    // Update risk score if suspicious location found
+    if (proc->is_from_suspicious_location) {
+        char details[256];
+        snprintf(details, sizeof(details), "Process running from suspicious location: %s", 
+                proc->exe_path);
+        
+        // Apply context-aware scoring
+        float base_score = RISK_SUSPICIOUS_LOCATION;
+        float adjusted_score = adjust_score_for_context(proc->pid, base_score, 
+                                                      proc->exe_path, proc->comm);
+        
+        int threshold_exceeded = update_process_score(proc->pid, adjusted_score, details);
+        
+        // If this pushes the process over the threshold, generate an alert
+        if (threshold_exceeded) {
+            generate_process_event(proc->pid, EVENT_PROCESS_SUSPICIOUS, details, adjusted_score);
         }
     }
 }
@@ -1481,6 +1826,22 @@ static void check_suspicious_cmdline(ProcessInfo* proc) {
             generate_process_event(proc->pid, EVENT_PROCESS_OBFUSCATION, details, 20.0f);
             record_behavior_event(proc, EVENT_PROCESS_OBFUSCATION, 20.0f, details);
             
+            // Update risk score
+            char details[256];
+            snprintf(details, sizeof(details), 
+                    "Detected obfuscated or suspicious command line");
+            
+            float base_score = RISK_OBFUSCATED_COMMAND;
+            float adjusted_score = adjust_score_for_context(proc->pid, base_score, 
+                                                          proc->exe_path, proc->comm);
+            
+            int threshold_exceeded = update_process_score(proc->pid, adjusted_score, details);
+            
+            // Generate alert if threshold exceeded
+            if (threshold_exceeded) {
+                generate_process_event(proc->pid, EVENT_PROCESS_SUSPICIOUS, details, adjusted_score);
+            }
+            
             return;
         }
         
@@ -1529,6 +1890,23 @@ static void check_privilege_escalation(ProcessInfo* proc) {
                 proc->uid, proc->euid);
         
         generate_process_event(proc->pid, EVENT_PROCESS_PRIVESC, details, 25.0f);
+        
+        // Update risk score
+        char details[256];
+        snprintf(details, sizeof(details), 
+                "Privilege escalation detected: UID %d -> EUID %d",
+                proc->uid, proc->euid);
+        
+        float base_score = RISK_PRIVILEGE_ESCALATION;
+        float adjusted_score = adjust_score_for_context(proc->pid, base_score, 
+                                                      proc->exe_path, proc->comm);
+        
+        int threshold_exceeded = update_process_score(proc->pid, adjusted_score, details);
+        
+        // Generate alert if threshold exceeded
+        if (threshold_exceeded) {
+            generate_process_event(proc->pid, EVENT_PROCESS_PRIVESC, details, adjusted_score);
+        }
     }
     
     // TODO: Check for process with different UID than parent process
@@ -1672,51 +2050,8 @@ static void update_process_suspicious_score(ProcessInfo* proc) {
 
 // Apply time-based decay to process suspicion scores
 static void apply_risk_decay(void) {
-    time_t now = time(NULL);
-    static time_t last_decay_time = 0;
-    
-    // Only decay scores every 30 seconds to reduce overhead
-    if (now - last_decay_time < 30) {
-        return;
-    }
-    
-    last_decay_time = now;
-    
-    // Calculate decay factor based on time elapsed
-    for (int i = 0; i < process_count; i++) {
-        ProcessInfo* proc = &monitored_processes[i];
-        
-        // Skip processes with no score
-        if (proc->suspicion_score <= 0.0f) continue;
-        
-        // Check when the last suspicious activity occurred
-        time_t last_activity = 0;
-        for (int j = 0; j < BEHAVIOR_HISTORY_SIZE; j++) {
-            if (proc->behavior_history[j].timestamp > last_activity) {
-                last_activity = proc->behavior_history[j].timestamp;
-            }
-        }
-        time_t time_since_activity = now - last_activity;
-        
-        // Apply different decay rates based on current score and activity time
-        if (time_since_activity > 300) { // 5+ minutes of good behavior
-            // Faster decay for higher scores, slower for lower scores
-            float decay_rate;
-            
-            if (proc->suspicion_score > 70.0f) {
-                decay_rate = 0.15f; // Aggressive decay for very suspicious processes
-            } else if (proc->suspicion_score > 40.0f) {
-                decay_rate = 0.08f; // Moderate decay for somewhat suspicious
-            } else {
-                decay_rate = 0.05f; // Slow decay for low suspicion
-            }
-            
-            // Apply exponential decay: S(t) = S₀ × e^(-λt)
-            // Using simplified version with discrete steps
-    }
-    
-    buffer[bytes_read] = '\0';
-    return bytes_read;
+    // Call the scoring system's decay function
+    apply_risk_score_decay();
 }
 
 // Generate a process-related event
@@ -2413,6 +2748,23 @@ static void update_process_memory_stats(ProcessInfo* proc) {
                             generate_process_event(proc->pid, EVENT_PROCESS_CORRELATION, details, 35.0f);
                             record_behavior_event(proc, EVENT_PROCESS_CORRELATION, 35.0f, details);
                         }
+                        
+                        // Update risk score
+                        char details[256];
+                        snprintf(details, sizeof(details),
+                                "Rapid memory allocation: %ld KB in %.1f sec (%.2f KB/sec)",
+                                memory_diff, time_diff, proc->memory_growth_rate);
+                        
+                        float base_score = RISK_RAPID_MEMORY_GROWTH;
+                        float adjusted_score = adjust_score_for_context(proc->pid, base_score, 
+                                                                      proc->exe_path, proc->comm);
+                        
+                        int threshold_exceeded = update_process_score(proc->pid, adjusted_score, details);
+                        
+                        // Generate alert if threshold exceeded
+                        if (threshold_exceeded) {
+                            generate_process_event(proc->pid, EVENT_MEMORY_SUSPICIOUS, details, adjusted_score);
+                        }
                     }
                 }
             }
@@ -2720,7 +3072,7 @@ static int classify_process_origin(ProcessInfo* proc) {
 
 // Get process info by PID
 ProcessInfo* process_monitor_get_process_info(pid_t pid) {
-    for (int i = 0; i < process_count; i++) {
+    for (int i = 0; process_count; i++) {
         if (monitored_processes[i].pid == pid) {
             return &monitored_processes[i];
         }
@@ -2753,4 +3105,1027 @@ void process_monitor_analyze_relationships(void) {
 void process_monitor_apply_risk_decay(void) {
     // Call the internal function
     apply_risk_decay();
+}
+
+// Hash function for PIDs
+static uint32_t hash_pid(pid_t pid) {
+    return (uint32_t)pid % PROCESS_HASH_TABLE_SIZE;
+}
+
+/**
+ * Tracks parent-child relationship between processes
+ * 
+ * @param parent_pid Parent process ID
+ * @param child_pid Child process ID
+ * @param parent_risk Current risk score of parent
+ * @return 0 on success, -1 on failure
+ */
+static int track_parent_child(pid_t parent_pid, pid_t child_pid, float parent_risk) {
+    if (parent_pid <= 0 || child_pid <= 0) {
+        return -1;
+    }
+    
+    pthread_mutex_lock(&lineage_mutex);
+    
+    // Calculate hash for the child PID
+    uint32_t hash = hash_pid(child_pid);
+    
+    // Check if we already have an entry for this child
+    ParentChildRelation* relation = process_lineage_table[hash];
+    
+    if (relation != NULL) {
+        // If the slot is taken but it's a different child, find a new slot
+        if (relation->child_pid != child_pid) {
+            // Linear probing to find an empty slot or matching child
+            int attempts = 0;
+            uint32_t probe_hash = hash;
+            
+            while (attempts < PROCESS_HASH_TABLE_SIZE) {
+                probe_hash = (probe_hash + 1) % PROCESS_HASH_TABLE_SIZE;
+                
+                if (process_lineage_table[probe_hash] == NULL) {
+                    // Found empty slot
+                    hash = probe_hash;
+                    relation = NULL;
+                    break;
+                } else if (process_lineage_table[probe_hash]->child_pid == child_pid) {
+                    // Found existing entry for this child
+                    hash = probe_hash;
+                    relation = process_lineage_table[probe_hash];
+                    break;
+                }
+                
+                attempts++;
+            }
+            
+            if (attempts >= PROCESS_HASH_TABLE_SIZE) {
+                // Table is full - replace oldest entry
+                time_t oldest_time = time(NULL);
+                uint32_t oldest_idx = 0;
+                
+                for (uint32_t i = 0; i < PROCESS_HASH_TABLE_SIZE; i++) {
+                    if (process_lineage_table[i] && process_lineage_table[i]->creation_time < oldest_time) {
+                        oldest_time = process_lineage_table[i]->creation_time;
+                        oldest_idx = i;
+                    }
+                }
+                
+                // Free the oldest entry
+                free(process_lineage_table[oldest_idx]);
+                process_lineage_table[oldest_idx] = NULL;
+                
+                // Use this slot
+                hash = oldest_idx;
+                relation = NULL;
+            }
+        }
+    }
+    
+    // Create a new entry if needed
+    if (relation == NULL) {
+        relation = (ParentChildRelation*)malloc(sizeof(ParentChildRelation));
+        if (!relation) {
+            LOG_ERROR("Failed to allocate memory for parent-child relation");
+            pthread_mutex_unlock(&lineage_mutex);
+            return -1;
+        }
+        
+        relation->child_pid = child_pid;
+        relation->parent_pid = parent_pid;
+        relation->creation_time = time(NULL);
+        relation->initial_risk_score = parent_risk;
+        relation->inheritance_applied = 0;
+        
+        process_lineage_table[hash] = relation;
+        
+        LOG_DEBUG("Added parent-child relationship: %d -> %d (parent risk: %.2f)", 
+                 parent_pid, child_pid, parent_risk);
+    } else {
+        // Update existing entry
+        relation->parent_pid = parent_pid;
+        relation->initial_risk_score = parent_risk;
+        relation->inheritance_applied = 0;
+        
+        LOG_DEBUG("Updated parent-child relationship: %d -> %d (parent risk: %.2f)", 
+                 parent_pid, child_pid, parent_risk);
+    }
+    
+    pthread_mutex_unlock(&lineage_mutex);
+    return 0;
+}
+
+/**
+ * Inherits risk score from parent to child
+ * 
+ * @param child_pid Child process ID
+ */
+static void inherit_risk_score(pid_t child_pid) {
+    pthread_mutex_lock(&lineage_mutex);
+    
+    // Find parent relationship for this child
+    uint32_t hash = hash_pid(child_pid);
+    ParentChildRelation* relation = NULL;
+    int found = 0;
+    
+    // Search for the child's entry using linear probing
+    for (uint32_t i = 0; i < PROCESS_HASH_TABLE_SIZE; i++) {
+        uint32_t probe_hash = (hash + i) % PROCESS_HASH_TABLE_SIZE;
+        
+        if (process_lineage_table[probe_hash] != NULL && 
+            process_lineage_table[probe_hash]->child_pid == child_pid) {
+            relation = process_lineage_table[probe_hash];
+            found = 1;
+            break;
+        }
+    }
+    
+    if (!found || relation == NULL || relation->inheritance_applied) {
+        pthread_mutex_unlock(&lineage_mutex);
+        return;
+    }
+    
+    // Get the parent and child process info
+    ProcessInfo* parent = find_process_info(relation->parent_pid);
+    ProcessInfo* child = find_process_info(child_pid);
+    
+    if (parent && child) {
+        // Get current parent risk
+        float parent_risk = parent->suspicion_score;
+        float parent_risk_at_creation = relation->initial_risk_score;
+        
+        // Use the maximum of the two scores as the basis for inheritance
+        float base_risk = (parent_risk > parent_risk_at_creation) ? 
+                          parent_risk : parent_risk_at_creation;
+        
+        // Calculate inheritance factor based on contextual information
+        float inheritance_factor = PARENT_RISK_INHERITANCE_FACTOR;
+        
+        // System processes inherit less from non-system parents
+        if (child->origin == ORIGIN_SYSTEM && parent->origin != ORIGIN_SYSTEM) {
+            inheritance_factor *= 0.5f;
+        }
+        // High-risk parents pass more risk to children
+        else if (parent->origin == ORIGIN_HIGH_RISK || parent->origin == ORIGIN_RECENT_DOWNLOAD) {
+            inheritance_factor *= 1.5f;
+        }
+        // Trusted parent processes with long history pass less risk
+        else if (parent->execution_count > 20 && parent->historical_max_score < 30.0f) {
+            inheritance_factor *= 0.5f;
+        }
+        
+        // Children from suspicious locations inherit more
+        if (child->is_from_suspicious_location) {
+            inheritance_factor *= 1.2f;
+        }
+        
+        // Calculate inherited risk
+        float inherited_risk = base_risk * inheritance_factor;
+        
+        // Only apply inheritance if it would increase the child's score
+        if (inherited_risk > child->suspicion_score * 0.5f) {
+            float old_score = child->suspicion_score;
+            
+            // Blend scores rather than just replacing
+            child->suspicion_score = (child->suspicion_score + inherited_risk) / 1.5f;
+            
+            // Mark the child as having a suspicious ancestry
+            child->ancestry_suspicious = 1;
+            
+            // Mark inheritance as applied
+            relation->inheritance_applied = 1;
+            
+            LOG_INFO("Process %d (%s) inherited risk from parent %d (%s): %.2f → %.2f (factor: %.2f)", 
+                    child_pid, child->comm, relation->parent_pid, parent->comm,
+                    old_score, child->suspicion_score, inheritance_factor);
+            
+            // Generate an event for significant inheritance
+            if (child->suspicion_score - old_score > 10.0f) {
+                char details[256];
+                snprintf(details, sizeof(details), 
+                        "Inherited risk from parent process %d (%s) with score %.2f", 
+                        parent->pid, parent->comm, parent_risk);
+                
+                generate_process_event(child_pid, EVENT_PROCESS_LINEAGE, details, 10.0f);
+                record_behavior_event(child, EVENT_PROCESS_LINEAGE, 10.0f, details);
+            }
+        }
+    }
+    
+    pthread_mutex_unlock(&lineage_mutex);
+}
+
+/**
+ * Gets the process lineage (chain of parent processes)
+ * 
+ * @param pid Process ID to check
+ * @param lineage Output parameter to store the lineage chain
+ */
+static void get_process_lineage(pid_t pid, ProcessLineage* lineage) {
+    if (!lineage) return;
+    
+    // Initialize lineage
+    memset(lineage, 0, sizeof(ProcessLineage));
+    
+    // Start with the current process
+    pid_t current_pid = pid;
+    int depth = 0;
+    
+    while (current_pid > 1 && depth < MAX_LINEAGE_DEPTH) {
+        // Add current PID to chain
+        lineage->process_chain[depth++] = current_pid;
+        
+        // Find parent PID
+        pid_t parent_pid = 0;
+        pthread_mutex_lock(&lineage_mutex);
+        
+        // Search hash table for this child
+        uint32_t hash = hash_pid(current_pid);
+        for (uint32_t i = 0; i < PROCESS_HASH_TABLE_SIZE; i++) {
+            uint32_t probe_hash = (hash + i) % PROCESS_HASH_TABLE_SIZE;
+            
+            if (process_lineage_table[probe_hash] != NULL && 
+                process_lineage_table[probe_hash]->child_pid == current_pid) {
+                parent_pid = process_lineage_table[probe_hash]->parent_pid;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&lineage_mutex);
+        
+        if (parent_pid <= 0) {
+            // If not found in our table, try to get from system
+            ProcessInfo* proc = find_process_info(current_pid);
+            if (proc && proc->ppid > 0) {
+                parent_pid = proc->ppid;
+            } else {
+                // Can't determine parent, stop here
+                break;
+            }
+        }
+        
+        // Continue with parent
+        current_pid = parent_pid;
+    }
+    
+    lineage->chain_length = depth;
+}
+
+/**
+ * Checks if a process is an ancestor of another process
+ * 
+ * @param potential_ancestor PID to check as ancestor
+ * @param pid Process ID to check lineage for
+ * @return 1 if ancestor, 0 if not
+ */
+static int is_ancestor(pid_t potential_ancestor, pid_t pid) {
+    if (potential_ancestor <= 0 || pid <= 0) return 0;
+    
+    ProcessLineage lineage;
+    get_process_lineage(pid, &lineage);
+    
+    // Check if potential_ancestor appears in the lineage
+    for (int i = 0; i < lineage.chain_length; i++) {
+        if (lineage.process_chain[i] == potential_ancestor) {
+            return 1;
+        }
+    }
+    
+    return 0;
+}
+
+/**
+ * Cleans up old lineage entries
+ * 
+ * @param older_than Remove entries older than this timestamp
+ */
+static void cleanup_old_lineage_entries(time_t older_than) {
+    pthread_mutex_lock(&lineage_mutex);
+    
+    for (uint32_t i = 0; i < PROCESS_HASH_TABLE_SIZE; i++) {
+        if (process_lineage_table[i] != NULL && 
+            process_lineage_table[i]->creation_time < older_than) {
+            
+            // Free and remove the entry
+            free(process_lineage_table[i]);
+            process_lineage_table[i] = NULL;
+        }
+    }
+    
+    pthread_mutex_unlock(&lineage_mutex);
+}
+
+// Initialize process lineage tracking in process_monitor_init
+// Add to the end of the function:
+static void initialize_lineage_tracking(void) {
+    // Initialize lineage hash table
+    memset(process_lineage_table, 0, sizeof(process_lineage_table));
+    
+    LOG_INFO("Process lineage tracking initialized%s", "");
+}
+
+// Cleanup lineage tracking in process_monitor_cleanup
+// Add to the function:
+static void cleanup_lineage_tracking(void) {
+    pthread_mutex_lock(&lineage_mutex);
+    
+    // Free all entries in the lineage table
+    for (uint32_t i = 0; i < PROCESS_HASH_TABLE_SIZE; i++) {
+        if (process_lineage_table[i] != NULL) {
+            free(process_lineage_table[i]);
+            process_lineage_table[i] = NULL;
+        }
+    }
+    
+    pthread_mutex_unlock(&lineage_mutex);
+    
+    LOG_INFO("Process lineage tracking cleaned up%s", "");
+}
+
+// Add a function to apply risk inheritance to all processes
+static void apply_risk_inheritance(void) {
+    // Build list of processes to apply inheritance to
+    // (do this outside of mutex to minimize lock time)
+    pid_t processes_to_check[MAX_MONITORED_PROCESSES];
+    int process_count_to_check = 0;
+    
+    for (int i = 0; i < process_count; i++) {
+        if (process_count_to_check < MAX_MONITORED_PROCESSES) {
+            processes_to_check[process_count_to_check++] = monitored_processes[i].pid;
+        }
+    }
+    
+    // Now apply inheritance to each process
+    for (int i = 0; i < process_count_to_check; i++) {
+        inherit_risk_score(processes_to_check[i]);
+    }
+}
+
+// Add a function to check if two processes are related
+int process_monitor_is_related(pid_t pid1, pid_t pid2) {
+    if (pid1 <= 0 || pid2 <= 0) return 0;
+    
+    // Check direct parent-child relationship both ways
+    if (is_ancestor(pid1, pid2) || is_ancestor(pid2, pid1)) {
+        return 1;
+    }
+    
+    // Check for common ancestor (siblings)
+    ProcessLineage lineage1, lineage2;
+    get_process_lineage(pid1, &lineage1);
+    get_process_lineage(pid2, &lineage2);
+    
+    // Compare ancestries to find common ancestor
+    for (int i = 0; i < lineage1.chain_length; i++) {
+        for (int j = 0; j < lineage2.chain_length; j++) {
+            if (lineage1.process_chain[i] == lineage2.process_chain[j] && 
+                lineage1.process_chain[i] > 1) { // Exclude PID 1 (init)
+                return 1;
+            }
+        }
+    }
+    
+    return 0;
+}
+
+/**
+ * Calculates Shannon entropy of a data buffer
+ * 
+ * @param data Pointer to the data buffer
+ * @param size Size of the data buffer in bytes
+ * @return Entropy value between 0-8 (for byte data)
+ */
+static double calculate_buffer_entropy(const unsigned char* data, size_t size) {
+    if (!data || size == 0) {
+        return 0.0;
+    }
+    
+    // Count occurrences of each byte value
+    unsigned long counts[256] = {0};
+    
+    // Process the buffer to count byte frequencies
+    for (size_t i = 0; i < size; i++) {
+        counts[data[i]]++;
+    }
+    
+    // Calculate Shannon entropy
+    double entropy = 0.0;
+    for (int i = 0; i < 256; i++) {
+        if (counts[i] > 0) {
+            double probability = (double)counts[i] / size;
+            entropy -= probability * log2(probability);
+        }
+    }
+    
+    return entropy;
+}
+
+/**
+ * Calculates Shannon entropy of a file
+ * 
+ * @param filepath Path to the file
+ * @return Entropy value between 0-8 (for byte data), or -1 on error
+ */
+double calculate_entropy(const char* filepath) {
+    if (!filepath) {
+        LOG_ERROR("Invalid filepath for entropy calculation%s", "");
+        return -1.0;
+    }
+    
+    // Open the file for reading
+    int fd = open(filepath, O_RDONLY);
+    if (fd == -1) {
+        LOG_ERROR("Failed to open file for entropy calculation: %s (%s)", 
+                 filepath, strerror(errno));
+        return -1.0;
+    }
+    
+    // Get file size
+    struct stat st;
+    if (fstat(fd, &st) == -1) {
+        LOG_ERROR("Failed to stat file for entropy calculation: %s (%s)", 
+                 filepath, strerror(errno));
+        close(fd);
+        return -1.0;
+    }
+    
+    // Calculate the actual size to read (limit to maximum sample size)
+    size_t file_size = st.st_size;
+    size_t size_to_read = file_size;
+    
+    if (size_to_read == 0) {
+        LOG_DEBUG("Empty file, entropy is 0: %s", filepath);
+        close(fd);
+        return 0.0;
+    }
+    
+    if (size_to_read > MAX_ENTROPY_SAMPLE_SIZE) {
+        size_to_read = MAX_ENTROPY_SAMPLE_SIZE;
+        LOG_DEBUG("File too large, sampling first %zu bytes for entropy: %s", 
+                 size_to_read, filepath);
+    }
+    
+    // Use memory mapping for efficient reading of large files
+    unsigned char* file_data = mmap(NULL, size_to_read, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (file_data == MAP_FAILED) {
+        // Fall back to regular read if mmap fails
+        LOG_DEBUG("Memory mapping failed for entropy calculation, using regular read: %s", filepath);
+        
+        unsigned char* buffer = (unsigned char*)malloc(size_to_read);
+        if (!buffer) {
+            LOG_ERROR("Failed to allocate memory for entropy calculation: %s", filepath);
+            close(fd);
+            return -1.0;
+        }
+        
+        ssize_t bytes_read = read(fd, buffer, size_to_read);
+        if (bytes_read <= 0) {
+            LOG_ERROR("Failed to read file for entropy calculation: %s (%s)", 
+                     filepath, strerror(errno));
+            free(buffer);
+            close(fd);
+            return -1.0;
+        }
+        
+        double entropy = calculate_buffer_entropy(buffer, bytes_read);
+        free(buffer);
+        close(fd);
+        return entropy;
+    }
+    
+    // Calculate entropy using the mapped data
+    double entropy = calculate_buffer_entropy(file_data, size_to_read);
+    
+    // Clean up
+    munmap(file_data, size_to_read);
+    close(fd);
+    
+    return entropy;
+}
+
+/**
+ * Detects high-entropy content in a data buffer
+ * 
+ * @param data Pointer to the data buffer
+ * @param size Size of the data buffer in bytes
+ * @param process Process information structure to update
+ * @param filepath Path to the file (for logging purposes)
+ * @return 1 if high entropy detected, 0 otherwise
+ */
+static int detect_high_entropy_data(const unsigned char* data, size_t size, 
+                                  ProcessInfo* process, const char* filepath) {
+    if (!data || size < 4096 || !process) {
+        // Too small to reliably detect entropy or invalid parameters
+        return 0;
+    }
+    
+    // Calculate entropy
+    double entropy = calculate_buffer_entropy(data, size);
+    process->last_file_entropy = entropy;
+    
+    // Check if entropy is suspicious (indicative of encryption or compression)
+    if (entropy >= HIGH_ENTROPY_THRESHOLD) {
+        // Definitely high entropy - strong indicator of encryption
+        time_t now = time(NULL);
+        process->high_entropy_writes++;
+        
+        // Calculate rate of high-entropy writes
+        int time_diff = (now - process->last_entropy_detection);
+        float high_entropy_rate = 0;
+        
+        if (process->last_entropy_detection > 0 && time_diff > 0 && time_diff < 60) {
+            // Only consider writes within the last minute for rate calculation
+            high_entropy_rate = (float)process->high_entropy_writes / time_diff;
+        }
+        
+        LOG_WARNING("High entropy content detected (%.2f) in %s written by process %d (%s)", 
+                   entropy, filepath, process->pid, process->comm);
+        
+        // Generate detailed event information
+        char details[256];
+        snprintf(details, sizeof(details), 
+                "High entropy write detected (%.2f/8.0) to file: %s (size: %zu bytes)", 
+                entropy, filepath, size);
+        
+        // Record this as suspicious behavior
+        record_behavior_event(process, EVENT_FILE_SUSPICIOUS, 20.0f, details);
+        
+        // Check for rapid high-entropy writes (strong ransomware indicator)
+        if (high_entropy_rate > 0.5) {  // More than 1 file every 2 seconds
+            char rate_details[256];
+            snprintf(rate_details, sizeof(rate_details), 
+                    "Rapid high-entropy writes detected: %.1f files/sec (total: %d files)", 
+                    high_entropy_rate, process->high_entropy_writes);
+            
+            LOG_ALERT("POSSIBLE ENCRYPTION ACTIVITY: Process %d (%s) writing multiple high-entropy files rapidly!", 
+                     process->pid, process->comm);
+            
+            // Record this as highly suspicious behavior
+            record_behavior_event(process, EVENT_PROCESS_SUSPICIOUS, 35.0f, rate_details);
+            
+            // Generate a suspicious process event
+            generate_process_event(process->pid, EVENT_PROCESS_SUSPICIOUS, rate_details, 35.0f);
+            
+            // Update the process risk score
+            int risk_increment = 10;  // Base risk increase per high-entropy file
+            
+            // Increase risk based on rate of encryption
+            if (high_entropy_rate > 2.0) {  // More than 2 files per second
+                risk_increment = 15;  // Higher risk for very rapid encryption
+            }
+            
+            // Add context information for better risk assessment
+            char score_details[256];
+            snprintf(score_details, sizeof(score_details), 
+                    "High-entropy file writes (%.2f entropy) at rate of %.1f files/sec", 
+                    entropy, high_entropy_rate);
+            
+            // Update the risk score through the scoring system
+            update_process_score(process->pid, risk_increment, score_details);
+        } else {
+            // Single high-entropy write - might be legitimate
+            // Still update the risk score, but with a lower value
+            char score_details[256];
+            snprintf(score_details, sizeof(score_details), 
+                    "High-entropy file write detected (%.2f entropy): %s", 
+                    entropy, filepath);
+            
+            update_process_score(process->pid, 5, score_details);
+        }
+        
+        process->last_entropy_detection = now;
+        return 1;
+    } else if (entropy >= MEDIUM_ENTROPY_THRESHOLD) {
+        // Medium-high entropy - possible encryption or compression
+        // Log but don't increment counters as aggressively
+        LOG_DEBUG("Medium-high entropy content (%.2f) detected in %s written by process %d (%s)", 
+                 entropy, filepath, process->pid, process->comm);
+        
+        // If we see multiple medium-entropy files, treat it as suspicious
+        if (process->high_entropy_writes > 5) {
+            char details[256];
+            snprintf(details, sizeof(details), 
+                    "Multiple medium-high entropy writes detected (latest: %.2f entropy)", 
+                    entropy);
+            
+            record_behavior_event(process, EVENT_FILE_SUSPICIOUS, 10.0f, details);
+            update_process_score(process->pid, 3, details);
+        }
+        
+        return 0;
+    }
+    
+    // No suspicious entropy detected
+    return 0;
+}
+
+/**
+ * Enhanced file content analysis when high-entropy data is suspected
+ * Analyzes file headers and content patterns to distinguish legitimate
+ * high-entropy files from potentially malicious ones
+ *
+ * @param filepath Path to the file
+ * @param process Process information structure to update
+ * @return 1 if likely malicious, 0 if likely legitimate
+ */
+static int analyze_high_entropy_file(const char* filepath, ProcessInfo* process) {
+    if (!filepath || !process) {
+        return 0;
+    }
+    
+    // Check file extension first - many legitimate files have high entropy
+    const char* extension = strrchr(filepath, '.');
+    
+    // List of known high-entropy file types that are usually legitimate
+    const char* legitimate_extensions[] = {
+        ".jpg", ".jpeg", ".png", ".gif", ".zip", ".rar", ".7z", ".gz", 
+        ".bz2", ".xz", ".mp3", ".mp4", ".avi", ".mov", ".mkv", ".iso",
+        ".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".jar", ".war", ".apk",
+        NULL
+    };
+    
+    if (extension) {
+        for (int i = 0; legitimate_extensions[i] != NULL; i++) {
+            if (strcasecmp(extension, legitimate_extensions[i]) == 0) {
+                // Known legitimate high-entropy file type
+                LOG_DEBUG("High entropy in known file format %s: %s", extension, filepath);
+                return 0;
+            }
+        }
+    }
+    
+    // If we get here, the file has high entropy but isn't a known format
+    // or has no extension - suspicious for ransomware
+    
+    // Open the file to check for specific patterns
+    int fd = open(filepath, O_RDONLY);
+    if (fd == -1) {
+        LOG_DEBUG("Failed to open file for deep analysis: %s", filepath);
+        // Assume suspicious if we can't verify
+        return 1;
+    }
+    
+    // Read file header (first 16 bytes is usually enough for magic numbers)
+    unsigned char header[16] = {0};
+    ssize_t bytes_read = read(fd, header, sizeof(header));
+    close(fd);
+    
+    if (bytes_read <= 0) {
+        LOG_DEBUG("Failed to read file header for deep analysis: %s", filepath);
+        return 1;
+    }
+    
+    // Check for known file signatures that might have been missed by extension check
+    
+    // JPEG: FF D8 FF
+    if (bytes_read >= 3 && header[0] == 0xFF && header[1] == 0xD8 && header[2] == 0xFF) {
+        LOG_DEBUG("High entropy file identified as JPEG by signature: %s", filepath);
+        return 0;
+    }
+    
+    // PNG: 89 50 4E 47 0D 0A 1A 0A
+    if (bytes_read >= 8 && header[0] == 0x89 && header[1] == 0x50 && 
+        header[2] == 0x4E && header[3] == 0x47 && header[4] == 0x0D && 
+        header[5] == 0x0A && header[6] == 0x1A && header[7] == 0x0A) {
+        LOG_DEBUG("High entropy file identified as PNG by signature: %s", filepath);
+        return 0;
+    }
+    
+    // ZIP/Office: 50 4B 03 04
+    if (bytes_read >= 4 && header[0] == 0x50 && header[1] == 0x4B && 
+        header[2] == 0x03 && header[3] == 0x04) {
+        LOG_DEBUG("High entropy file identified as ZIP/Office by signature: %s", filepath);
+        return 0;
+    }
+    
+    // RAR: 52 61 72 21 1A 07
+    if (bytes_read >= 6 && header[0] == 0x52 && header[1] == 0x61 && 
+        header[2] == 0x72 && header[3] == 0x21 && header[4] == 0x1A && 
+        header[5] == 0x07) {
+        LOG_DEBUG("High entropy file identified as RAR by signature: %s", filepath);
+        return 0;
+    }
+    
+    // GIF: 47 49 46 38
+    if (bytes_read >= 4 && header[0] == 0x47 && header[1] == 0x49 && 
+        header[2] == 0x46 && header[3] == 0x38) {
+        LOG_DEBUG("High entropy file identified as GIF by signature: %s", filepath);
+        return 0;
+    }
+    
+    // PDF: 25 50 44 46
+    if (bytes_read >= 4 && header[0] == 0x25 && header[1] == 0x50 && 
+        header[2] == 0x44 && header[3] == 0x46) {
+        LOG_DEBUG("High entropy file identified as PDF by signature: %s", filepath);
+        return 0;
+    }
+    
+    // If we get here, high entropy with no known file format signature
+    // This is highly suspicious, especially for ransomware
+    LOG_WARNING("Unknown high-entropy file detected: %s", filepath);
+    return 1;
+}
+
+/**
+ * Periodically checks open files for entropy changes
+ * This can detect ransomware operations that occur over time
+ */
+static void scan_files_for_entropy_changes(ProcessInfo* proc) {
+    if (!proc || proc->monitoring_level < MONITORING_LEVEL_HIGH) {
+        return; // Only perform this check for high-monitoring processes
+    }
+    
+    // Only scan files occasionally to prevent performance impact
+    static time_t last_entropy_scan = 0;
+    time_t now = time(NULL);
+    
+    if (now - last_entropy_scan < 300) { // Every 5 minutes
+        return;
+    }
+    
+    last_entropy_scan = now;
+    
+    // Get list of open files for the process
+    char proc_fd_path[64];
+    snprintf(proc_fd_path, sizeof(proc_fd_path), "/proc/%d/fd", proc->pid);
+    
+    DIR* fd_dir = opendir(proc_fd_path);
+    if (!fd_dir) {
+        return;
+    }
+    
+    struct dirent* entry;
+    int high_entropy_count = 0;
+    
+    while ((entry = readdir(fd_dir)) != NULL) {
+        if (entry->d_type != DT_LNK) {
+            continue; // Only interested in symbolic links (file descriptors)
+        }
+        
+        // Get the target path for this file descriptor
+        char fd_path[64];
+        snprintf(fd_path, sizeof(fd_path), "/proc/%d/fd/%s", proc->pid, entry->d_name);
+        
+        char target_path[MAX_PATH_LENGTH] = {0};
+        ssize_t len = readlink(fd_path, target_path, sizeof(target_path) - 1);
+        if (len <= 0) {
+            continue;
+        }
+        target_path[len] = '\0';
+        
+        // Skip special files and directories
+        if (strncmp(target_path, "/dev/", 5) == 0 || 
+            strncmp(target_path, "/proc/", 6) == 0 || 
+            strncmp(target_path, "/sys/", 5) == 0 ||
+            strncmp(target_path, "pipe:", 5) == 0 ||
+            strncmp(target_path, "socket:", 7) == 0 ||
+            strncmp(target_path, "anon_inode:", 11) == 0) {
+            continue;
+        }
+        
+        // Calculate entropy for this file
+        double entropy = calculate_entropy(target_path);
+        if (entropy >= HIGH_ENTROPY_THRESHOLD) {
+            high_entropy_count++;
+            
+            // Check if this is a known high-entropy file format
+            if (analyze_high_entropy_file(target_path, proc) == 1) {
+                // This is a suspicious high-entropy file
+                LOG_WARNING("Process %d (%s) has suspicious high-entropy file open: %s (entropy: %.2f)",
+                           proc->pid, proc->comm, target_path, entropy);
+                
+                char details[256];
+                snprintf(details, sizeof(details),
+                        "Suspicious high-entropy file detected: %s (entropy: %.2f)",
+                        target_path, entropy);
+                
+                record_behavior_event(proc, EVENT_FILE_SUSPICIOUS, 15.0f, details);
+                
+                // Only update score for significant findings to avoid noise
+                if (high_entropy_count >= 3) {
+                    update_process_score(proc->pid, 8, 
+                                        "Multiple suspicious high-entropy files detected");
+                }
+            }
+        }
+    }
+    
+    closedir(fd_dir);
+    
+    // Log overall findings
+    if (high_entropy_count > 5) {
+        LOG_WARNING("Process %d (%s) has %d high-entropy files open - possible encryption activity",
+                   proc->pid, proc->comm, high_entropy_count);
+        
+        char details[256];
+        snprintf(details, sizeof(details),
+                "Large number of high-entropy files open (%d) - possible encryption activity",
+                high_entropy_count);
+        
+        record_behavior_event(proc, EVENT_PROCESS_SUSPICIOUS, 25.0f, details);
+        generate_process_event(proc->pid, EVENT_PROCESS_SUSPICIOUS, details, 25.0f);
+        
+        // Update risk score based on the number of high-entropy files
+        update_process_score(proc->pid, 10 + (high_entropy_count > 10 ? 10 : 0), 
+                            "Multiple high-entropy files indicate possible encryption activity");
+    }
+}
+
+/**
+ * Initialize entropy tracking in the ProcessInfo structure
+ * Call this when initializing a new process in add_process_info
+ */
+static void init_entropy_tracking(ProcessInfo* proc) {
+    if (!proc) return;
+    
+    proc->high_entropy_writes = 0;
+    proc->last_entropy_detection = 0;
+    proc->last_file_entropy = 0.0f;
+}
+
+/**
+ * Checks if a process is masquerading as a system process
+ * This detects when a process has a common system name (like 'systemd')
+ * but is running from a non-standard path
+ * 
+ * @param pid Process ID to check
+ * @return 1 if masquerading is detected, 0 otherwise
+ */
+static int is_masquerading(pid_t pid) {
+    ProcessInfo* proc = find_process_info(pid);
+    if (!proc || !proc->comm[0] || !proc->exe_path[0]) {
+        return 0;
+    }
+    
+    // Common system process names and their expected paths
+    struct {
+        const char* name;
+        const char* expected_path_prefix;
+    } system_processes[] = {
+        {"systemd", "/lib/systemd/"},
+        {"systemd", "/usr/lib/systemd/"},
+        {"bash", "/bin/"},
+        {"bash", "/usr/bin/"},
+        {"sh", "/bin/"},
+        {"sh", "/usr/bin/"},
+        {"sshd", "/usr/sbin/"},
+        {"httpd", "/usr/sbin/"},
+        {"nginx", "/usr/sbin/"},
+        {"apache2", "/usr/sbin/"},
+        {"mysql", "/usr/bin/"},
+        {"mysqld", "/usr/sbin/"},
+        {"crond", "/usr/sbin/"},
+        {"ntpd", "/usr/sbin/"},
+        {"dhclient", "/usr/sbin/"},
+        {"udevd", "/lib/systemd/"},
+        {"login", "/bin/"},
+        {"sudo", "/usr/bin/"},
+        {"su", "/bin/"},
+        {"init", "/sbin/"},
+        {"snapd", "/usr/lib/snapd/"},
+        {"dockerd", "/usr/bin/"},
+        {"containerd", "/usr/bin/"},
+        {NULL, NULL}
+    };
+    
+    // Check if the process name matches any known system process
+    for (int i = 0; system_processes[i].name != NULL; i++) {
+        if (strcmp(proc->comm, system_processes[i].name) == 0) {
+            // Process name matches a known system process, check path
+            if (strncmp(proc->exe_path, 
+                      system_processes[i].expected_path_prefix, 
+                      strlen(system_processes[i].expected_path_prefix)) != 0) {
+                
+                // Found a system process name running from unexpected path
+                LOG_WARNING("Potential masquerading: %s running from %s instead of %s*",
+                           proc->comm, proc->exe_path, system_processes[i].expected_path_prefix);
+                
+                // Check for specific evasion techniques
+                // 1. Hidden directory
+                if (strstr(proc->exe_path, "/.") != NULL) {
+                    LOG_WARNING("Masquerading process %s (PID %d) uses hidden directory: %s",
+                               proc->comm, proc->pid, proc->exe_path);
+                    return 2; // More suspicious
+                }
+                
+                // 2. Temporary directory
+                if (strncmp(proc->exe_path, "/tmp/", 5) == 0 || 
+                    strncmp(proc->exe_path, "/var/tmp/", 9) == 0 ||
+                    strncmp(proc->exe_path, "/dev/shm/", 9) == 0) {
+                    LOG_WARNING("Masquerading process %s (PID %d) running from temp directory: %s",
+                               proc->comm, proc->pid, proc->exe_path);
+                    return 2; // More suspicious
+                }
+                
+                return 1;
+            }
+        }
+    }
+    
+    return 0;
+}
+
+/**
+ * Checks if a process has suspicious memory regions (RWX permissions)
+ * that could indicate code injection
+ * 
+ * @param pid Process ID to check
+ * @return 1 if suspicious memory regions found, 0 otherwise
+ */
+static int check_memory_injection(pid_t pid) {
+    char maps_path[64];
+    snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
+    
+    FILE* f = fopen(maps_path, "r");
+    if (!f) {
+        return 0;
+    }
+    
+    char line[1024];
+    int rwx_regions = 0;
+    int suspicious_regions = 0;
+    size_t suspicious_region_size = 0;
+    char suspicious_region_detail[256] = {0};
+    
+    while (fgets(line, sizeof(line), f) != NULL) {
+        // Parse memory region permissions
+        // Format: address perms offset dev inode pathname
+        // Example: 7f6e24bb5000-7f6e24bb7000 rwxp 00000000 08:01 1048602 /lib/x86_64-linux-gnu/ld-2.27.so
+        
+        // Find permissions field (second column)
+        char* perms = line;
+        while (*perms && *perms != ' ') perms++;
+        if (*perms) perms++;
+        
+        // Check if the permissions include 'rwx'
+        if (strncmp(perms, "rwx", 3) == 0) {
+            rwx_regions++;
+            
+            // Parse the address range to calculate region size
+            unsigned long start_addr = 0, end_addr = 0;
+            sscanf(line, "%lx-%lx", &start_addr, &end_addr);
+            size_t region_size = end_addr - start_addr;
+            
+            // Extract the mapped file name if present
+            char* pathname = strrchr(line, '/');
+            if (!pathname) {
+                pathname = strstr(line, "[");
+                if (!pathname) pathname = "[anonymous]";
+            }
+            
+            // Certain RWX regions are more suspicious than others:
+            // 1. Anonymous memory mappings (no file)
+            // 2. Large memory regions
+            // 3. Heap or unusual memory locations
+            
+            int is_suspicious = 0;
+            
+            // Anonymous memory with rwx is highly suspicious
+            if (strstr(line, "[heap]") || strstr(line, "[anon") || strstr(line, "00:00 0 ")) {
+                is_suspicious = 2; // More suspicious
+            }
+            // Large RWX regions are suspicious
+            else if (region_size > 1024 * 1024) { // > 1MB
+                is_suspicious = 1;
+            }
+            // JIT compilers and some legitimate processes use RWX
+            else if (pathname && (strstr(pathname, "libjvm.so") || 
+                                 strstr(pathname, "libv8") ||
+                                 strstr(pathname, "firefox") ||
+                                 strstr(pathname, "chrome"))) {
+                is_suspicious = 0; // Less suspicious for known JIT engines
+            }
+            else {
+                is_suspicious = 1;
+            }
+            
+            if (is_suspicious) {
+                suspicious_regions++;
+                if (suspicious_region_size < region_size) {
+                    suspicious_region_size = region_size;
+                    // Save details of the largest suspicious region
+                    char* newline = strchr(line, '\n');
+                    if (newline) *newline = '\0';
+                    strncpy(suspicious_region_detail, line, sizeof(suspicious_region_detail) - 1);
+                }
+            }
+        }
+    }
+    
+    fclose(f);
+    
+    // Log and return based on findings
+    if (suspicious_regions > 0) {
+        ProcessInfo* proc = find_process_info(pid);
+        const char* proc_name = proc ? proc->comm : "unknown";
+        
+        LOG_WARNING("Process %d (%s) has %d suspicious RWX memory regions (total: %d)",
+                   pid, proc_name, suspicious_regions, rwx_regions);
+        
+        if (suspicious_region_detail[0]) {
+            LOG_WARNING("Largest suspicious region: %s", suspicious_region_detail);
+        }
+        
+        return suspicious_regions;
+    }
+    
+    return 0;
 }
